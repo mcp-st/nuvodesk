@@ -1,0 +1,16 @@
+[Unit]
+Description=NuvoDesk — Nuvolink project & materials management
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/srv/openclaw/projects/nuvodesk
+ExecStart=/usr/bin/python3 /srv/openclaw/projects/nuvodesk/app.py
+Restart=always
+RestartSec=5
+Environment=PORT=8014
+Environment=BASE_PATH=/nuvodesk
+
+[Install]
+WantedBy=multi-user.target
