@@ -451,12 +451,68 @@ textarea{resize:vertical;min-height:70px}
   .tabs{overflow-x:auto;-webkit-overflow-scrolling:touch}
   .tab-btn{white-space:nowrap;padding:8px 12px;font-size:.82rem}
 }
+  /* kanban mobile: horizontal scroll */
+  .kanban{grid-template-columns:repeat(4,80vw)!important;overflow-x:auto;
+    scroll-snap-type:x mandatory;padding-bottom:8px;gap:10px!important}
+  .kanban-col{scroll-snap-align:start;min-width:0}
+  .proj-cards{grid-template-columns:1fr!important}
+}
 @media(min-width:769px){
   #menu-btn{display:none!important}
 }
 #menu-btn{position:fixed;top:10px;left:10px;z-index:210;
   background:var(--side-bg);color:#fff;border:none;border-radius:6px;
   width:38px;height:38px;font-size:1.1rem;display:flex;align-items:center;justify-content:center}
+
+/* ── kanban board ── */
+.kanban{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;align-items:start;margin-bottom:20px}
+.kanban-col{background:var(--bg4);border-radius:var(--radius);padding:12px;
+  min-height:180px;transition:background .15s}
+.kanban-col.drag-over{background:var(--blue-dim);outline:2px dashed var(--blue)}
+.kanban-col-hd{display:flex;align-items:center;justify-content:space-between;
+  padding-bottom:10px;border-bottom:2px solid var(--border);margin-bottom:10px}
+.kanban-col-hd .col-title{font-size:.75rem;font-weight:700;text-transform:uppercase;
+  letter-spacing:.6px;display:flex;align-items:center;gap:7px}
+.kanban-col-hd .col-count{background:var(--bg2);border:1px solid var(--border);
+  border-radius:10px;padding:1px 7px;font-size:.72rem;font-weight:700;color:var(--muted)}
+.kanban-cards{min-height:60px}
+.task-card{background:#fff;border:1px solid var(--border);border-radius:7px;
+  padding:11px 13px;margin-bottom:8px;cursor:grab;box-shadow:0 1px 3px rgba(0,0,0,.06);
+  user-select:none;transition:box-shadow .15s,transform .1s;position:relative}
+.task-card:hover{box-shadow:0 3px 10px rgba(0,0,0,.1)}
+.task-card.dragging{opacity:.45;transform:rotate(1.5deg);box-shadow:0 6px 20px rgba(0,0,0,.18);cursor:grabbing}
+.task-card-title{font-weight:600;font-size:.87rem;line-height:1.35;margin-bottom:6px}
+.task-card-foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:7px}
+.task-card-strip{position:absolute;left:0;top:0;bottom:0;width:4px;border-radius:7px 0 0 7px}
+.task-card-inner{padding-left:8px}
+.kanban-add{width:100%;background:none;border:1px dashed var(--border);border-radius:6px;
+  padding:7px;font-size:.8rem;color:var(--muted);cursor:pointer;margin-top:6px;transition:.15s}
+.kanban-add:hover{background:var(--bg2);color:var(--blue);border-color:var(--blue)}
+
+/* ── project cards (grid view) ── */
+.proj-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:16px;margin-bottom:20px}
+.proj-card{background:#fff;border:1px solid var(--border);border-radius:var(--radius);
+  overflow:hidden;box-shadow:var(--shadow);transition:box-shadow .15s,transform .1s;
+  display:flex;flex-direction:column;text-decoration:none;color:var(--text)}
+.proj-card:hover{box-shadow:0 6px 20px rgba(0,0,0,.1);transform:translateY(-2px)}
+.proj-card-strip{height:5px}
+.proj-card-body{padding:14px 16px;flex:1}
+.proj-card-name{font-weight:700;font-size:.97rem;margin-bottom:2px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.proj-card-client{font-size:.77rem;color:var(--muted);margin-bottom:10px}
+.proj-card-tags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.proj-card-prog{margin-top:8px}
+.proj-card-prog-label{font-size:.72rem;color:var(--muted);margin-bottom:3px;
+  display:flex;justify-content:space-between}
+.proj-card-foot{padding:9px 16px;border-top:1px solid var(--border);
+  background:var(--bg3);display:flex;align-items:center;
+  justify-content:space-between;font-size:.75rem;color:var(--muted)}
+
+/* ── view toggle ── */
+.view-toggle{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.view-toggle button{background:none;border:none;padding:6px 12px;font-size:.8rem;
+  cursor:pointer;color:var(--muted);transition:.15s}
+.view-toggle button.active{background:var(--blue);color:#fff}
 """
 
 # ── shell ─────────────────────────────────────────────────────────────────────
@@ -646,7 +702,7 @@ def _dashboard(user):
     return _shell("dashboard", user, content)
 
 # ── projects list ─────────────────────────────────────────────────────────────
-def _projects_page(user, filter_status=""):
+def _projects_page(user, filter_status="", view="cards"):
     where = "WHERE p.status=?" if filter_status else ""
     params = (filter_status,) if filter_status else ()
     projects = rs(q(f"""SELECT p.*,u.display_name tech,
@@ -660,40 +716,94 @@ def _projects_page(user, filter_status=""):
     techs = rs(q("SELECT id,display_name FROM users WHERE active=1 ORDER BY display_name"))
     tech_opts = "".join(f'<option value="{t["id"]}">{_esc(t["display_name"])}</option>' for t in techs)
 
-    fbtn = lambda s, l: (f'<a href="{BP}/projects{"?status="+s if s else ""}" '
+    fbtn = lambda s, l: (f'<a href="{BP}/projects{"?status="+s if s else ""}{"&view="+view if view else ""}" '
         f'class="btn btn-sm {"btn-primary" if filter_status==s else "btn-ghost"}">{l}</a>')
     filters = (fbtn("","Todos")+fbtn("active","Activos")+fbtn("paused","Pausados")
                +fbtn("completed","Completados")+fbtn("cancelled","Cancelados"))
 
+    strip_color = {"active":"#15803d","paused":"#b45309","completed":"#1558c2",
+                   "cancelled":"#94a3b8","":  "#94a3b8"}
+
+    # ── card view ──
+    cards_html = ""
+    for p in projects:
+        pct = int(p['task_d']/p['task_t']*100) if p['task_t'] else 0
+        sc = strip_color.get(p['status'], "#94a3b8")
+        pc = PRIORITY_COLOR.get(p['priority'], "#64748b")
+        ref_chip = f'<span class="chip" style="background:#f1f5f9;color:#64748b">#{_esc(p["reference"])}</span>' if p.get("reference") else ""
+        due_html = f'🗓 {_esc(p["due_date"][:10])}' if p.get("due_date") else ""
+        tech_html = f'👤 {_esc(p["tech"])}' if p.get("tech") else ""
+        plabel = {"low":"Baja","normal":"Normal","high":"Alta","urgent":"Urgente"}.get(p["priority"],"")
+        prog_html = ""
+        if p["task_t"]:
+            prog_html = (f'<div class="proj-card-prog">'
+                f'<div class="proj-card-prog-label">'
+                f'<span>Tareas</span><span>{p["task_d"]}/{p["task_t"]}</span></div>'
+                f'<div class="progress"><div class="progress-bar" style="width:{pct}%"></div></div></div>')
+        cards_html += (
+            f'<a class="proj-card" href="{BP}/projects/{p["id"]}">'
+            f'<div class="proj-card-strip" style="background:{sc}"></div>'
+            f'<div class="proj-card-body">'
+            f'<div class="proj-card-name">{_esc(p["name"])}</div>'
+            f'<div class="proj-card-client">{_esc(p["client"])}</div>'
+            f'<div class="proj-card-tags">'
+            f'{_badge(p["status"])}'
+            f'<span style="color:{pc};font-size:.75rem;font-weight:700">▲ {plabel}</span>'
+            f'{ref_chip}</div>'
+            f'{prog_html}'
+            f'</div>'
+            f'<div class="proj-card-foot">'
+            f'<span>{due_html}</span><span>{tech_html}</span>'
+            f'<button onclick="event.preventDefault();event.stopPropagation();editProject({json.dumps(dict(p))})" '
+            f'class="btn btn-ghost btn-icon">✏️</button>'
+            f'</div></a>')
+
+    # ── table view ──
     rows = ""
     for p in projects:
         pct = int(p['task_d']/p['task_t']*100) if p['task_t'] else 0
         prog = (f'<div class="progress" style="width:70px;display:inline-block;vertical-align:middle">'
                 f'<div class="progress-bar" style="width:{pct}%"></div></div>'
-                f'<span class="muted" style="font-size:.72rem;margin-left:5px">{pct}%</span>')
+                f'<span class="muted" style="font-size:.72rem;margin-left:4px">{pct}%</span>')
         ref_html = f'<br><span class="muted" style="font-size:.72rem">#{_esc(p["reference"])}</span>' if p.get("reference") else ""
         rows += (f'<tr><td><a href="{BP}/projects/{p["id"]}" class="fw7">{_esc(p["name"])}</a>'
             f'{ref_html}<br><span class="muted" style="font-size:.75rem">{_esc(p["client"])}</span></td>'
-            f'<td>{_badge(p["status"])}</td>'
-            f'<td class="col-m-hide">{_pbadge(p["priority"])}</td>'
+            f'<td>{_badge(p["status"])}</td><td class="col-m-hide">{_pbadge(p["priority"])}</td>'
             f'<td class="muted col-m-hide">{_esc(p["tech"] or "—")}</td>'
             f'<td class="muted col-m-hide">{_esc((p["due_date"] or "—")[:10])}</td>'
             f'<td class="col-m-hide">{prog}</td>'
             f'<td><button class="btn btn-ghost btn-icon" onclick="editProject({json.dumps(dict(p))})">✏️</button>'
             f'<a href="{BP}/projects/{p["id"]}" class="btn btn-ghost btn-icon">→</a></td></tr>')
 
+    empty = "<p class='muted' style='text-align:center;padding:32px;grid-column:1/-1'>Sin proyectos todavía</p>"
+    view_qs = f"{'&status='+filter_status if filter_status else ''}"
+    vt_cards = "active" if view == "cards" else ""
+    vt_list  = "active" if view == "list"  else ""
+
     content = f"""
 <div class="toolbar">
   <h1>Proyectos</h1>
-  <button class="btn btn-primary" onclick="openNewProject()">+ Nuevo</button>
+  <div style="display:flex;gap:10px;align-items:center">
+    <div class="view-toggle">
+      <button class="{vt_cards}" onclick="window.location='{BP}/projects?view=cards{view_qs}'">⊞ Tarjetas</button>
+      <button class="{vt_list}"  onclick="window.location='{BP}/projects?view=list{view_qs}'">☰ Lista</button>
+    </div>
+    <button class="btn btn-primary" onclick="openNewProject()">+ Nuevo</button>
+  </div>
 </div>
-<div class="toolbar-left" style="margin-bottom:16px">{filters}</div>
+<div class="toolbar-left" style="margin-bottom:18px">{filters}</div>
+
+<div id="view-cards" style="{"" if view=="cards" else "display:none"}">
+  <div class="proj-cards">{cards_html or empty}</div>
+</div>
+<div id="view-list" style="{"" if view=="list" else "display:none"}">
 <div class="card">
   <div class="tbl-wrap"><table><thead><tr>
     <th>Proyecto / Cliente</th><th>Estado</th>
     <th class="col-m-hide">Prioridad</th><th class="col-m-hide">Técnico</th>
     <th class="col-m-hide">Límite</th><th class="col-m-hide">Avance</th><th></th>
   </tr></thead><tbody>{rows or "<tr><td colspan='7' class='muted' style='text-align:center;padding:24px'>Sin proyectos</td></tr>"}</tbody></table></div>
+</div>
 </div>
 
 <div class="modal-bg" id="proj-modal">
@@ -798,6 +908,67 @@ document.getElementById('proj-form').onsubmit=function(e){{
 </script>"""
     return _shell("projects", user, content)
 
+
+# ── kanban builder ────────────────────────────────────────────────────────────
+def _build_kanban(tasks, pid):
+    cols = [
+        ("pending",    "Pendiente",  "🔘", "#64748b"),
+        ("in_progress","En curso",   "🔵", "#1558c2"),
+        ("blocked",    "Bloqueado",  "🔴", "#dc2626"),
+        ("done",       "Hecho",      "🟢", "#15803d"),
+    ]
+    task_by_status = {s: [] for s, *_ in cols}
+    for t in tasks:
+        s = t['status'] if t['status'] in task_by_status else 'pending'
+        task_by_status[s].append(t)
+
+    html = '<div class="kanban">'
+    for status, label, icon, color in cols:
+        col_tasks = task_by_status[status]
+        cards = ""
+        for t in col_tasks:
+            pcolor = PRIORITY_COLOR.get(t['priority'], "#64748b")
+            plabel = {"low":"Baja","normal":"Normal","high":"Alta","urgent":"Urgente"}.get(t['priority'],'')
+            cl_total = t.get('cl_t', 0)
+            cl_done  = t.get('cl_d', 0)
+            cl_pct   = int(cl_done/cl_total*100) if cl_total else 0
+            cl_html  = ""
+            if cl_total:
+                cl_html = (f'<div style="margin-top:6px">'
+                           f'<div style="font-size:.7rem;color:var(--muted);margin-bottom:2px">'
+                           f'Checklist {cl_done}/{cl_total}</div>'
+                           f'<div class="progress"><div class="progress-bar" style="width:{cl_pct}%"></div></div></div>')
+            due_html = f'<span style="font-size:.72rem;color:var(--muted)">🗓 {t["due_date"][:10]}</span>' if t.get('due_date') else ""
+            cards += (
+                f'<div class="task-card" draggable="true" '
+                f'data-task-id="{t["id"]}" data-status="{t["status"]}" '
+                f'data-title="{_esc(t["title"])}" data-priority="{t["priority"]}">'
+                f'<div class="task-card-strip" style="background:{pcolor}"></div>'
+                f'<div class="task-card-inner">'
+                f'<div class="task-card-title">{_esc(t["title"])}</div>'
+                f'{("<div style=font-size:.75rem;color:var(--muted);margin-bottom:4px>"+_esc(t["description"])+"</div>") if t.get("description") else ""}'
+                f'{cl_html}'
+                f'<div class="task-card-foot">'
+                f'<span style="color:{pcolor};font-size:.72rem;font-weight:700">▲ {plabel}</span>'
+                f'{due_html}'
+                f'<button class="btn btn-ghost btn-icon" style="margin-left:auto;font-size:.75rem" '
+                f'onclick="openChecklist({t["id"]},{json.dumps(t["title"])})">☑</button>'
+                f'<button class="btn btn-ghost btn-icon" style="font-size:.75rem" '
+                f'onclick="editTask({json.dumps(dict(t))})">✏️</button>'
+                f'<button class="btn btn-danger btn-icon" style="font-size:.75rem" '
+                f'onclick="delTask({t["id"]})">✕</button>'
+                f'</div></div></div>')
+
+        count = len(col_tasks)
+        html += (f'<div class="kanban-col" data-status="{status}">'
+                 f'<div class="kanban-col-hd">'
+                 f'<div class="col-title" style="color:{color}">{icon} {label}</div>'
+                 f'<span class="col-count">{count}</span></div>'
+                 f'<div class="kanban-cards" data-status="{status}">{cards}</div>'
+                 f'<button class="kanban-add" onclick="openNewTaskStatus(\'{status}\')">+ Añadir tarea</button>'
+                 f'</div>')
+    html += '</div>'
+    return html
 
 # ── project detail ────────────────────────────────────────────────────────────
 def _project_detail(user, pid):
@@ -926,14 +1097,29 @@ def _project_detail(user, pid):
 <!-- TAB TAREAS -->
 <div id="tab-tareas" class="tab-pane active">
 <div class="toolbar">
-  <h2>Tareas</h2>
+  <div style="display:flex;align-items:center;gap:10px">
+    <h2 style="margin:0">Tareas</h2>
+    <div class="view-toggle" id="task-view-toggle">
+      <button class="active" id="vbtn-kanban" onclick="setTaskView('kanban')">⊞ Kanban</button>
+      <button id="vbtn-list" onclick="setTaskView('list')">☰ Lista</button>
+    </div>
+  </div>
   <button class="btn btn-primary btn-sm" onclick="openNewTask()">+ Tarea</button>
 </div>
+
+<!-- kanban view (default) -->
+<div id="tasks-kanban">
+{_build_kanban(tasks, pid)}
+</div>
+
+<!-- list view (hidden by default) -->
+<div id="tasks-list" style="display:none">
 <div class="card">
   <div class="tbl-wrap"><table><thead><tr>
     <th style="width:40px"></th><th>Tarea</th><th>Estado</th>
     <th class="col-m-hide">Prioridad</th><th class="col-m-hide">Vencimiento</th><th></th>
-  </tr></thead><tbody>{t_rows or "<tr><td colspan='6' class='muted' style='text-align:center;padding:20px'>Sin tareas — añade la primera</td></tr>"}</tbody></table></div>
+  </tr></thead><tbody>{t_rows or "<tr><td colspan='6' class='muted' style='text-align:center;padding:20px'>Sin tareas</td></tr>"}</tbody></table></div>
+</div>
 </div>
 </div>
 
@@ -1131,15 +1317,80 @@ document.getElementById('proj-form').onsubmit=function(e){{
   }}).then(function(r){{if(r.ok)location.reload();}});
 }};
 
+// ── task view toggle ──
+function setTaskView(v){{
+  document.getElementById('tasks-kanban').style.display=v==='kanban'?'':'none';
+  document.getElementById('tasks-list').style.display=v==='list'?'':'none';
+  document.getElementById('vbtn-kanban').className=v==='kanban'?'active':'';
+  document.getElementById('vbtn-list').className=v==='list'?'active':'';
+  localStorage.setItem('nd_task_view_'+pid,v);
+}}
+(function(){{
+  var saved=localStorage.getItem('nd_task_view_'+pid);
+  if(saved&&saved==='list') setTaskView('list');
+}})();
+
+// ── kanban drag & drop ──
+var _dragging=null;
+document.querySelectorAll('.task-card').forEach(function(card){{
+  card.addEventListener('dragstart',function(e){{
+    _dragging=this;
+    this.classList.add('dragging');
+    e.dataTransfer.effectAllowed='move';
+    e.dataTransfer.setData('text/plain',this.dataset.taskId);
+  }});
+  card.addEventListener('dragend',function(){{
+    this.classList.remove('dragging');
+    _dragging=null;
+    document.querySelectorAll('.kanban-col').forEach(function(c){{c.classList.remove('drag-over');}});
+  }});
+}});
+document.querySelectorAll('.kanban-col').forEach(function(col){{
+  col.addEventListener('dragover',function(e){{
+    e.preventDefault();e.dataTransfer.dropEffect='move';
+    this.classList.add('drag-over');
+  }});
+  col.addEventListener('dragleave',function(e){{
+    if(!col.contains(e.relatedTarget)) this.classList.remove('drag-over');
+  }});
+  col.addEventListener('drop',function(e){{
+    e.preventDefault();
+    this.classList.remove('drag-over');
+    if(!_dragging) return;
+    var newStatus=this.dataset.status;
+    var oldStatus=_dragging.dataset.status;
+    if(newStatus===oldStatus) return;
+    var cardsEl=this.querySelector('.kanban-cards');
+    cardsEl.appendChild(_dragging);
+    _dragging.dataset.status=newStatus;
+    // update count badges
+    document.querySelectorAll('.kanban-col').forEach(function(c){{
+      var cnt=c.querySelectorAll('.task-card').length;
+      c.querySelector('.col-count').textContent=cnt;
+    }});
+    // persist
+    fetch(bp+'/api/tasks/'+_dragging.dataset.taskId,{{method:'PUT',
+      headers:{{'Content-Type':'application/json'}},
+      body:JSON.stringify({{status:newStatus,title:_dragging.dataset.title,
+        priority:_dragging.dataset.priority}})}});
+  }});
+}});
+
 // ── tasks ──
+var _newTaskStatus='pending';
+function openNewTaskStatus(status){{
+  _newTaskStatus=status||'pending';
+  openNewTask();
+}}
 function openNewTask(){{
   document.getElementById('task-modal-title').textContent='Nueva tarea';
   document.getElementById('task-id').value='';
   document.getElementById('t-title').value='';
   document.getElementById('t-desc').value='';
-  document.getElementById('t-status').value='pending';
+  document.getElementById('t-status').value=_newTaskStatus||'pending';
   document.getElementById('t-priority').value='normal';
   document.getElementById('t-due').value='';
+  _newTaskStatus='pending';
   document.getElementById('task-modal').classList.add('open');
 }}
 function editTask(t){{
@@ -1779,7 +2030,7 @@ class Handler(BaseHTTPRequestHandler):
         if rel in ("/", "/dashboard"):
             self._send(200, _dashboard(sess)); return
         if rel == "/projects":
-            self._send(200, _projects_page(sess, qs.get("status",[""])[0])); return
+            self._send(200, _projects_page(sess, qs.get("status",[""])[0], qs.get("view",["cards"])[0])); return
         m = re.match(r"^/projects/(\d+)$", rel)
         if m:
             html = _project_detail(sess, int(m.group(1)))
