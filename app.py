@@ -455,7 +455,7 @@ textarea{resize:vertical;min-height:70px}
   .kanban{grid-template-columns:repeat(4,80vw)!important;overflow-x:auto;
     scroll-snap-type:x mandatory;padding-bottom:8px;gap:10px!important}
   .kanban-col{scroll-snap-align:start;min-width:0}
-  .proj-cards{grid-template-columns:1fr!important}
+  .proj-cards{grid-template-columns:repeat(auto-fill,minmax(260px,300px))!important}
 }
 @media(min-width:769px){
   #menu-btn{display:none!important}
@@ -490,10 +490,11 @@ textarea{resize:vertical;min-height:70px}
 .kanban-add:hover{background:var(--bg2);color:var(--blue);border-color:var(--blue)}
 
 /* ── project cards (grid view) ── */
-.proj-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:16px;margin-bottom:20px}
+.proj-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,300px));
+  justify-content:start;gap:16px;margin-bottom:20px}
 .proj-card{background:#fff;border:1px solid var(--border);border-radius:var(--radius);
   overflow:hidden;box-shadow:var(--shadow);transition:box-shadow .15s,transform .1s;
-  display:flex;flex-direction:column;text-decoration:none;color:var(--text)}
+  display:flex;flex-direction:column;text-decoration:none;color:var(--text);width:100%}
 .proj-card:hover{box-shadow:0 6px 20px rgba(0,0,0,.1);transform:translateY(-2px)}
 .proj-card-strip{height:5px}
 .proj-card-body{padding:14px 16px;flex:1}
