@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """NuvoDesk v3 — Nuvolink field project & materials management."""
 
-import os, json, sqlite3, hashlib, secrets, threading, re, calendar as _cal
+import os, json, sqlite3, hashlib, secrets, threading, re, calendar as _cal, mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote_plus
 from datetime import datetime, date as _date, timedelta
 
 PORT     = int(os.environ.get("PORT", 8014))
 BP       = os.environ.get("BASE_PATH", "").rstrip("/")
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-DB_PATH  = os.path.join(DATA_DIR, "nuvodesk.db")
-os.makedirs(DATA_DIR, exist_ok=True)
+DATA_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DB_PATH   = os.path.join(DATA_DIR, "nuvodesk.db")
+FILES_DIR = os.path.join(DATA_DIR, "files")
+os.makedirs(DATA_DIR,  exist_ok=True)
+os.makedirs(FILES_DIR, exist_ok=True)
 
 # ── sessions ──────────────────────────────────────────────────────────────────
 _sessions: dict = {}
@@ -187,6 +189,27 @@ CREATE TABLE IF NOT EXISTS project_members (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(project_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS schedule_slots (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    slot_date  TEXT NOT NULL,
+    hour_start INTEGER NOT NULL DEFAULT 8,
+    hour_end   INTEGER NOT NULL DEFAULT 9,
+    notes      TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS project_files (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    filename      TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    mimetype      TEXT DEFAULT '',
+    size_bytes    INTEGER DEFAULT 0,
+    uploaded_by   INTEGER REFERENCES users(id),
+    notes         TEXT DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 MIGRATIONS = [
@@ -221,6 +244,59 @@ def _esc(s) -> str:
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+def _fmt_size(b):
+    if b < 1024: return f"{b} B"
+    if b < 1048576: return f"{b//1024} KB"
+    return f"{b/1048576:.1f} MB"
+
+def _parse_multipart(h):
+    ct  = h.headers.get('Content-Type','')
+    cl  = int(h.headers.get('Content-Length',0))
+    body = h.rfile.read(cl)
+    boundary = ''
+    for part in ct.split(';'):
+        s = part.strip()
+        if s.startswith('boundary='):
+            boundary = s[9:].strip('"')
+    if not boundary:
+        return {}, {}
+    delim = ('--' + boundary).encode()
+    fields, files = {}, {}
+    for raw in body.split(delim)[1:]:
+        if raw.strip() in (b'--', b'--\r\n', b''):
+            continue
+        if b'\r\n\r\n' in raw:
+            hdr_raw, content = raw.split(b'\r\n\r\n', 1)
+        elif b'\n\n' in raw:
+            hdr_raw, content = raw.split(b'\n\n', 1)
+        else:
+            continue
+        if content.endswith(b'\r\n'):
+            content = content[:-2]
+        name, fname, mime_part = '', None, ''
+        for line in hdr_raw.decode('utf-8','replace').splitlines():
+            if ':' not in line:
+                continue
+            k, _, v = line.partition(':')
+            k = k.strip().lower()
+            if k == 'content-disposition':
+                for item in v.split(';'):
+                    item = item.strip()
+                    if item.startswith('name='):
+                        name = item[5:].strip('"')
+                    elif item.startswith('filename='):
+                        fname = item[9:].strip('"')
+            elif k == 'content-type':
+                mime_part = v.strip()
+        if fname is not None:
+            files[name] = {'filename': fname, 'data': content, 'mime': mime_part}
+        else:
+            try:
+                fields[name] = content.decode('utf-8')
+            except Exception:
+                fields[name] = ''
+    return fields, files
 
 def _stock_move(material_id, qty, direction, source, ref_id, user_id, notes=""):
     run("INSERT INTO stock_movements (material_id,qty,direction,source,ref_id,user_id,notes) VALUES (?,?,?,?,?,?,?)",
@@ -441,9 +517,11 @@ textarea{resize:vertical;min-height:70px}
 .cal-dow{text-align:center;font-size:.68rem;font-weight:700;color:var(--muted);
   text-transform:uppercase;letter-spacing:.5px;padding:4px 0}
 .cal-day{background:var(--bg2);border:1px solid var(--border);border-radius:7px;
-  min-height:80px;padding:5px;font-size:.78rem;position:relative;overflow:hidden}
+  min-height:80px;padding:5px;font-size:.78rem;position:relative;overflow:hidden;
+  display:block;text-decoration:none;color:var(--text);transition:border-color .15s}
+.cal-day:hover{border-color:var(--blue)}
 .cal-day.today{border-color:var(--blue);background:#f0f5ff}
-.cal-day.other-month{background:var(--bg3);opacity:.55}
+.cal-day.other-month{background:var(--bg3);opacity:.55;pointer-events:none}
 .cal-day-num{font-weight:700;font-size:.75rem;color:var(--muted);margin-bottom:3px}
 .cal-day.today .cal-day-num{color:var(--blue)}
 .cal-chip{display:block;padding:2px 5px;border-radius:4px;font-size:.65rem;
@@ -602,6 +680,50 @@ textarea{resize:vertical;min-height:70px}
 .view-toggle button{background:none;border:none;padding:6px 12px;font-size:.8rem;
   cursor:pointer;color:var(--muted);transition:.15s}
 .view-toggle button.active{background:var(--blue);color:#fff}
+
+/* ── day view (schedule) ── */
+.day-matrix{width:100%;border-collapse:collapse;font-size:.78rem}
+.day-matrix th{padding:5px 8px;background:var(--bg3);border:1px solid var(--border);
+  font-weight:700;text-align:center;white-space:nowrap;position:sticky;top:0;z-index:2}
+.day-matrix th.hour-col{text-align:right;color:var(--muted);min-width:52px;
+  font-weight:600;font-size:.72rem;position:sticky;left:0;z-index:3;background:var(--bg3)}
+.day-matrix td{border:1px solid var(--border);padding:0;height:38px;
+  min-width:110px;vertical-align:top;position:relative}
+.day-matrix td.hour-label{text-align:right;padding:5px 8px;color:var(--muted);
+  font-size:.72rem;background:var(--bg3);position:sticky;left:0;z-index:1;white-space:nowrap}
+.day-matrix td.now-row{background:#fefce8}
+.slot-block{display:flex;align-items:flex-start;gap:4px;padding:3px 5px;
+  border-radius:4px;font-size:.68rem;font-weight:600;color:#fff;margin:2px;
+  line-height:1.3;position:relative}
+.slot-block .slot-del{position:absolute;top:1px;right:2px;background:rgba(0,0,0,.25);
+  border:none;color:#fff;border-radius:2px;font-size:.6rem;padding:0 3px;
+  cursor:pointer;opacity:0;transition:opacity .15s}
+.slot-block:hover .slot-del{opacity:1}
+.day-nav{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+
+/* ── files ── */
+.file-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+  gap:12px;margin-top:14px}
+.file-card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);
+  overflow:hidden;position:relative;transition:box-shadow .15s}
+.file-card:hover{box-shadow:var(--shadow-md)}
+.file-thumb{width:100%;height:100px;object-fit:cover;display:block}
+.file-icon{width:100%;height:100px;display:flex;align-items:center;justify-content:center;
+  font-size:2.2rem;background:var(--bg4)}
+.file-info{padding:6px 8px;font-size:.72rem}
+.file-info .file-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;color:var(--text);margin-bottom:2px}
+.file-info .file-meta{color:var(--muted)}
+.file-del{position:absolute;top:4px;right:4px;background:rgba(0,0,0,.5);color:#fff;
+  border:none;border-radius:4px;width:20px;height:20px;font-size:.7rem;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  opacity:0;transition:opacity .15s}
+.file-card:hover .file-del{opacity:1}
+.upload-area{border:2px dashed var(--border);border-radius:var(--radius);
+  padding:24px;text-align:center;margin-bottom:14px;cursor:pointer;
+  transition:border-color .2s,background .2s}
+.upload-area:hover,.upload-area.drag-over{border-color:var(--blue);background:var(--blue-dim)}
+.upload-area input[type=file]{display:none}
 """
 
 # ── shell ─────────────────────────────────────────────────────────────────────
@@ -1113,6 +1235,31 @@ def _build_kanban(tasks, pid):
     html += '</div>'
     return html
 
+# ── file grid helper ─────────────────────────────────────────────────────────
+def _build_file_grid(pfiles, pid):
+    if not pfiles:
+        return '<p class="muted" style="text-align:center;padding:24px;grid-column:1/-1">Sin archivos — arrastra aquí o usa el área de carga</p>'
+    imgs = {'image/jpeg','image/png','image/gif','image/webp','image/svg+xml'}
+    cards = ""
+    for f in pfiles:
+        url = f'{BP}/api/projects/{pid}/files/{f["filename"]}'
+        is_img = f['mimetype'] in imgs or f['mimetype'].startswith('image/')
+        icon = '🖼' if is_img else ('📄' if 'pdf' in f['mimetype'] else
+               '📊' if 'sheet' in f['mimetype'] or 'excel' in f['mimetype'] else
+               '📝' if 'word' in f['mimetype'] or 'doc' in f['mimetype'] else '📎')
+        preview = (f'<a href="{url}" target="_blank"><img src="{url}" class="file-thumb" loading="lazy"></a>'
+                   if is_img else
+                   f'<a href="{url}" download="{_esc(f["original_name"])}" class="file-icon">{icon}</a>')
+        cards += (
+            f'<div class="file-card">'
+            f'{preview}'
+            f'<button class="file-del" onclick="delFile({f["id"]})" title="Eliminar">✕</button>'
+            f'<div class="file-info">'
+            f'<div class="file-name" title="{_esc(f["original_name"])}">{_esc(f["original_name"])}</div>'
+            f'<div class="file-meta">{_fmt_size(f["size_bytes"])} · {_esc(f["created_at"][:10])}</div>'
+            f'</div></div>')
+    return cards
+
 # ── project detail ────────────────────────────────────────────────────────────
 def _project_detail(user, pid):
     p = r2d(q1("""SELECT p.*,u.display_name tech FROM projects p
@@ -1141,6 +1288,8 @@ def _project_detail(user, pid):
     all_users = rs(q("SELECT id,display_name,role FROM users WHERE active=1 ORDER BY display_name"))
     user_opts = "".join(
         f'<option value="{u["id"]}">{_esc(u["display_name"])}</option>' for u in all_users)
+
+    pfiles = rs(q("""SELECT * FROM project_files WHERE project_id=? ORDER BY created_at DESC""", (pid,)))
 
     mats = rs(q("SELECT id,code,name,unit,stock_warehouse FROM materials ORDER BY name"))
     mat_opts = "".join(
@@ -1277,6 +1426,7 @@ def _project_detail(user, pid):
   <button class="tab-btn" onclick="showTab('materiales',this)">Materiales ({len(assignments)})</button>
   <button class="tab-btn" onclick="showTab('diario',this)">Diario ({len(logs)})</button>
   <button class="tab-btn" onclick="showTab('equipo',this)">👥 Equipo ({len(members)})</button>
+  <button class="tab-btn" onclick="showTab('archivos',this)">📁 Archivos ({len(pfiles)})</button>
   <button class="tab-btn" onclick="showTab('info',this)">Info</button>
 </div>
 
@@ -1384,6 +1534,26 @@ def _project_detail(user, pid):
     <button class="btn btn-primary" onclick="doAddMember()">Añadir</button>
   </div>
 </div></div>
+
+<!-- TAB ARCHIVOS -->
+<div id="tab-archivos" class="tab-pane">
+<div class="toolbar"><h2>Archivos del proyecto</h2></div>
+
+<div class="upload-area" id="upload-area" onclick="document.getElementById('file-input').click()"
+  ondragover="event.preventDefault();this.classList.add('drag-over')"
+  ondragleave="this.classList.remove('drag-over')"
+  ondrop="event.preventDefault();this.classList.remove('drag-over');handleFiles(event.dataTransfer.files)">
+  <input type="file" id="file-input" multiple onchange="handleFiles(this.files)">
+  <div style="font-size:1.8rem;margin-bottom:6px">📎</div>
+  <div class="fw7" style="font-size:.9rem">Arrastra archivos aquí o haz clic para seleccionar</div>
+  <div class="muted" style="font-size:.78rem;margin-top:4px">Imágenes, PDFs, documentos — sin límite de tipo</div>
+</div>
+<div id="upload-status"></div>
+
+<div class="file-grid" id="file-grid">
+{_build_file_grid(pfiles, pid)}
+</div>
+</div>
 
 <!-- MODAL editar proyecto -->
 <div class="modal-bg" id="proj-modal">
@@ -1782,6 +1952,29 @@ function doAddMember(){{
 function removeMember(id){{
   if(!confirm('¿Quitar del equipo?')) return;
   fetch(bp+'/api/project_members/'+id,{{method:'DELETE'}})
+    .then(function(r){{if(r.ok)location.reload();}});
+}}
+
+// ── files ──
+function handleFiles(files){{
+  if(!files||!files.length) return;
+  var status=document.getElementById('upload-status');
+  status.innerHTML='<div class="alert alert-amber">Subiendo '+files.length+' archivo(s)...</div>';
+  var promises=Array.from(files).map(function(file){{
+    var fd=new FormData();
+    fd.append('file',file);
+    return fetch(bp+'/api/projects/'+pid+'/files',{{method:'POST',body:fd}})
+      .then(function(r){{return r.json();}});
+  }});
+  Promise.all(promises).then(function(){{
+    location.reload();
+  }}).catch(function(e){{
+    status.innerHTML='<div class="alert alert-red">Error al subir: '+e.message+'</div>';
+  }});
+}}
+function delFile(id){{
+  if(!confirm('¿Eliminar este archivo?')) return;
+  fetch(bp+'/api/project_files/'+id,{{method:'DELETE'}})
     .then(function(r){{if(r.ok)location.reload();}});
 }}
 </script>"""
@@ -2428,7 +2621,7 @@ def _calendar_page(user, year, month):
             chips += (f'<span class="cal-chip" style="background:{col}" '
                       f'title="{_esc(ent["uname"])} → {_esc(ent["pname"])}">'
                       f'{_esc(initials)} {_esc(ent["pname"][:12])}</span>')
-        cells.append(f'<div class="cal-day{today_cls}"><div class="cal-day-num">{day.day}</div>{chips}</div>')
+        cells.append(f'<a href="{BP}/calendar/{day_str}" class="cal-day{today_cls}"><div class="cal-day-num">{day.day}</div>{chips}</a>')
 
     # pad end to complete the last week
     while len(cells) % 7 != 0:
@@ -2540,6 +2733,197 @@ function doCreateAssign(){{
 </script>"""
     return _shell("calendar", user, content)
 
+# ── calendar day detail ────────────────────────────────────────────────────────
+def _calendar_day(user, day_str):
+    try:
+        day = _date.fromisoformat(day_str)
+    except ValueError:
+        return None
+
+    today = _date.today()
+    prev_day = str(day - timedelta(days=1))
+    next_day = str(day + timedelta(days=1))
+
+    month_names = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
+                   "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+    dow_names   = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
+    day_label   = f"{dow_names[day.weekday()]} {day.day} de {month_names[day.month-1]} {day.year}"
+
+    # load slots for this day
+    slots = rs(q("""SELECT ss.*,u.display_name uname,p.name pname
+        FROM schedule_slots ss
+        JOIN users u ON u.id=ss.user_id
+        JOIN projects p ON p.id=ss.project_id
+        WHERE ss.slot_date=?
+        ORDER BY ss.hour_start, u.display_name""", (day_str,)))
+
+    # all active technicians (columns)
+    techs = rs(q("SELECT id,display_name FROM users WHERE active=1 AND role IN ('admin','technician') ORDER BY display_name"))
+    # active projects for modal
+    projs = rs(q("SELECT id,name FROM projects WHERE status IN ('active','paused') ORDER BY name"))
+
+    tech_opts = "".join(f'<option value="{t["id"]}">{_esc(t["display_name"])}</option>' for t in techs)
+    proj_opts = "".join(f'<option value="{p["id"]}">{_esc(p["name"])}</option>' for p in projs)
+    hour_opts_start = "".join(f'<option value="{h}">{"0"+str(h) if h<10 else h}:00</option>' for h in range(6,20))
+    hour_opts_end   = "".join(f'<option value="{h}" {"selected" if h==9 else ""}>{"0"+str(h) if h<10 else h}:00</option>' for h in range(7,21))
+
+    # build matrix: hours 6..20 × techs
+    now_hour = datetime.now().hour if day == today else -1
+    tech_ids = [t['id'] for t in techs]
+
+    # slot lookup: (tech_id, hour) → slot
+    slot_map = {}
+    for s in slots:
+        for h in range(s['hour_start'], s['hour_end']):
+            key = (s['user_id'], h)
+            if key not in slot_map:
+                slot_map[key] = s
+
+    # Generate matrix HTML
+    # Header row
+    th_techs = "".join(
+        f'<th><div class="avatar avatar-sm" style="background:{_pcolor(t["id"])};margin:0 auto 3px">'
+        f'{"".join(w[0].upper() for w in t["display_name"].split()[:2])}</div>'
+        f'<div style="font-size:.65rem">{_esc(t["display_name"].split()[0])}</div></th>'
+        for t in techs)
+
+    rows_html = ""
+    for h in range(6, 21):
+        now_cls = ' class="now-row"' if h == now_hour else ''
+        cells = ""
+        for tid in tech_ids:
+            s = slot_map.get((tid, h))
+            if s:
+                col = _pcolor(s['project_id'])
+                pshort = _esc(s['pname'][:14])
+                if s['hour_start'] == h:
+                    end_str = f'{s["hour_end"]:02d}:00'
+                    cells += (f'<td{now_cls}><div class="slot-block" style="background:{col}">'
+                              f'{pshort}'
+                              f'<br><span style="opacity:.8;font-size:.6rem">→ {end_str}</span>'
+                              f'<button class="slot-del" onclick="delSlot({s["id"]})">✕</button>'
+                              f'</div></td>')
+                else:
+                    cells += (f'<td{now_cls}><div class="slot-block" style="background:{col};opacity:.7">'
+                              f'<span style="opacity:.6">·</span></div></td>')
+            else:
+                cells += f'<td{now_cls}></td>'
+        hstr = f'{"0" if h<10 else ""}{h}:00'
+        rows_html += f'<tr><td class="hour-label">{hstr}</td>{cells}</tr>'
+
+    # slots list (sidebar summary)
+    slot_list = ""
+    for s in slots:
+        col = _pcolor(s['project_id'])
+        initials = "".join(w[0].upper() for w in s['uname'].split()[:2])
+        slot_list += (
+            f'<div style="display:flex;align-items:center;gap:8px;padding:8px 0;'
+            f'border-bottom:1px solid var(--border)">'
+            f'<div class="avatar" style="background:{col}">{_esc(initials)}</div>'
+            f'<div style="flex:1">'
+            f'<div class="fw7" style="font-size:.85rem">{_esc(s["uname"])}</div>'
+            f'<div style="font-size:.75rem;color:var(--muted)">{s["hour_start"]:02d}:00 → {s["hour_end"]:02d}:00 · {_esc(s["pname"])}</div>'
+            f'{("<div style=font-size:.72rem;color:var(--muted)>"+_esc(s["notes"])+"</div>") if s.get("notes") else ""}'
+            f'</div>'
+            f'<button class="btn btn-danger btn-icon" style="font-size:.7rem" onclick="delSlot({s["id"]})">✕</button>'
+            f'</div>')
+
+    if not slot_list:
+        slot_list = '<p class="muted" style="padding:12px 0;font-size:.85rem;text-align:center">Sin franjas asignadas</p>'
+
+    content = f"""
+<div class="day-nav">
+  <a href="{BP}/calendar/{prev_day}" class="btn btn-ghost btn-sm">← {prev_day}</a>
+  <div style="flex:1;text-align:center">
+    <h1 style="margin:0">{day_label}</h1>
+    <a href="{BP}/calendar?year={day.year}&month={day.month}" class="muted" style="font-size:.8rem">
+      ← Volver al mes
+    </a>
+  </div>
+  <a href="{BP}/calendar/{next_day}" class="btn btn-ghost btn-sm">{next_day} →</a>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 280px;gap:18px;align-items:start">
+
+<div class="card" style="padding:0;overflow:hidden">
+  <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+    <h2 style="margin:0">Horario hora a hora</h2>
+    <button class="btn btn-primary btn-sm" onclick="document.getElementById('slot-modal').classList.add('open')">+ Franja horaria</button>
+  </div>
+  <div style="overflow-x:auto">
+  <table class="day-matrix">
+    <thead><tr><th class="hour-col">Hora</th>{th_techs}</tr></thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+  </div>
+</div>
+
+<div>
+  <div class="card">
+    <h2>Resumen del día</h2>
+    {slot_list}
+    <div style="margin-top:12px">
+      <button class="btn btn-primary btn-sm" style="width:100%" onclick="document.getElementById('slot-modal').classList.add('open')">+ Añadir franja</button>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<!-- MODAL nueva franja -->
+<div class="modal-bg" id="slot-modal">
+<div class="modal" style="max-width:460px">
+  <h2>Nueva franja horaria</h2>
+  <div class="form-row single"><div><label>Técnico</label><select id="sl-user">{tech_opts}</select></div></div>
+  <div class="form-row single"><div><label>Proyecto</label><select id="sl-proj">{proj_opts}</select></div></div>
+  <div class="form-row">
+    <div><label>Hora inicio</label><select id="sl-start">{hour_opts_start}</select></div>
+    <div><label>Hora fin</label><select id="sl-end">{hour_opts_end}</select></div>
+  </div>
+  <div class="form-row single"><div><label>Notas (opcional)</label>
+    <input id="sl-notes" placeholder="Reunión, desplazamiento, tarea..."></div></div>
+  <div class="modal-foot">
+    <button type="button" class="btn btn-ghost" onclick="document.getElementById('slot-modal').classList.remove('open')">Cancelar</button>
+    <button class="btn btn-primary" onclick="doAddSlot()">Guardar</button>
+  </div>
+</div></div>
+
+<script>
+var bp={json.dumps(BP)};
+var slotDate="{day_str}";
+document.getElementById('slot-modal').onclick=function(e){{if(e.target===this)this.classList.remove('open');}};
+function doAddSlot(){{
+  var hs=parseInt(document.getElementById('sl-start').value);
+  var he=parseInt(document.getElementById('sl-end').value);
+  if(he<=hs){{alert('La hora fin debe ser posterior a la hora inicio');return;}}
+  fetch(bp+'/api/schedule_slots',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{user_id:document.getElementById('sl-user').value,
+      project_id:document.getElementById('sl-proj').value,
+      slot_date:slotDate,hour_start:hs,hour_end:he,
+      notes:document.getElementById('sl-notes').value}})}})
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+}}
+function delSlot(id){{
+  if(!confirm('¿Eliminar esta franja?')) return;
+  fetch(bp+'/api/schedule_slots/'+id,{{method:'DELETE'}})
+    .then(function(r){{if(r.ok)location.reload();}});
+}}
+// pre-select hour based on current time
+(function(){{
+  var now=new Date();
+  var h=now.getHours();
+  var sel=document.getElementById('sl-start');
+  for(var i=0;i<sel.options.length;i++){{
+    if(parseInt(sel.options[i].value)===h){{sel.selectedIndex=i;break;}}
+  }}
+  var sel2=document.getElementById('sl-end');
+  for(var i=0;i<sel2.options.length;i++){{
+    if(parseInt(sel2.options[i].value)===h+1){{sel2.selectedIndex=i;break;}}
+  }}
+}})();
+</script>"""
+    return _shell("calendar", user, content)
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 def _body(h) -> dict:
     n = int(h.headers.get("Content-Length", 0))
@@ -2558,13 +2942,42 @@ def _body(h) -> dict:
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args): pass
 
-    def _send(self, code, body, ct="text/html; charset=utf-8"):
+    def _send(self, code, body, ct="text/html; charset=utf-8", extra_headers=None):
         b = body.encode() if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ct)
         self.send_header("Content-Length", str(len(b)))
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
         self.end_headers()
         self.wfile.write(b)
+
+    def _upload_file(self, sess, project_id):
+        try:
+            fields, files = _parse_multipart(self)
+            if not files:
+                self._json(400, {"error":"No se recibió ningún archivo"}); return
+            uploaded = []
+            proj_dir = os.path.join(FILES_DIR, str(project_id))
+            os.makedirs(proj_dir, exist_ok=True)
+            for _field, fobj in files.items():
+                orig = fobj['filename'] or 'archivo'
+                safe = re.sub(r'[^\w\.\-]', '_', orig)[:180]
+                stored = f"{secrets.token_hex(8)}_{safe}"
+                path = os.path.join(proj_dir, stored)
+                with open(path, 'wb') as fp:
+                    fp.write(fobj['data'])
+                mime = fobj.get('mime','') or mimetypes.guess_type(orig)[0] or 'application/octet-stream'
+                notes = fields.get('notes','')
+                fid = run("""INSERT INTO project_files
+                    (project_id,filename,original_name,mimetype,size_bytes,uploaded_by,notes)
+                    VALUES(?,?,?,?,?,?,?)""",
+                    (project_id, stored, orig, mime, len(fobj['data']), sess['id'], notes))
+                uploaded.append({'id': fid, 'name': orig})
+            self._json(201, {'files': uploaded})
+        except Exception as ex:
+            self._json(500, {"error": str(ex)})
 
     def _json(self, code, data):
         self._send(code, json.dumps(data, ensure_ascii=False), "application/json")
@@ -2614,6 +3027,10 @@ class Handler(BaseHTTPRequestHandler):
             yr = int(qs.get("year",[_date.today().year])[0])
             mo = int(qs.get("month",[_date.today().month])[0])
             self._send(200, _calendar_page(sess, yr, mo)); return
+        m = re.match(r"^/calendar/(\d{4}-\d{2}-\d{2})$", rel)
+        if m:
+            html = _calendar_day(sess, m.group(1))
+            self._send(200 if html else 404, html or "Not found"); return
         if rel == "/users":
             if sess.get("role") != "admin": self._redirect(f"{BP}/"); return
             self._send(200, _users_page(sess)); return
@@ -2635,6 +3052,18 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, rs(q("""SELECT pm.*,u.display_name uname FROM project_members pm
                 JOIN users u ON u.id=pm.user_id WHERE pm.project_id=?
                 ORDER BY pm.start_date""", (int(m.group(1)),)))); return
+        m = re.match(r"^/api/projects/(\d+)/files/(.+)$", rel)
+        if m:
+            pid_f = int(m.group(1)); fname = m.group(2)
+            pf = r2d(q1("SELECT * FROM project_files WHERE project_id=? AND filename=?", (pid_f, fname)))
+            if not pf: self._send(404, "Not found"); return
+            fpath = os.path.join(FILES_DIR, str(pid_f), fname)
+            if not os.path.exists(fpath): self._send(404, "Not found"); return
+            with open(fpath,'rb') as fp: fdata = fp.read()
+            mime = pf['mimetype'] or mimetypes.guess_type(fname)[0] or 'application/octet-stream'
+            is_img = mime.startswith('image/')
+            disp = 'inline' if is_img else f'attachment; filename="{pf["original_name"]}"'
+            self._send(200, fdata, mime, {"Content-Disposition": disp}); return
         if rel == "/api/kit":
             if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
             self._json(200, rs(q("SELECT k.*,m.name mat_name,m.code mat_code FROM tech_kit k JOIN materials m ON m.id=k.material_id"))); return
@@ -2664,10 +3093,11 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path)
         rel = p.path[len(BP):] if p.path.startswith(BP) and BP else p.path
         rel = rel or "/"
-        data = _body(self)
+        req_ct = self.headers.get('Content-Type','')
 
-        # login (no auth required)
+        # login — parse body before auth check
         if rel == "/api/login":
+            data = _body(self)
             un = (data.get("username","") or "").strip()
             pw = data.get("password","") or ""
             u = r2d(q1("SELECT * FROM users WHERE username=? AND active=1", (un,)))
@@ -2681,6 +3111,30 @@ class Handler(BaseHTTPRequestHandler):
 
         sess = _get_sess(self)
         if not sess: self._json(401, {"error":"Unauthorized"}); return
+
+        # file upload (multipart — must be handled before _body() consumes the stream)
+        if 'multipart/form-data' in req_ct:
+            mf = re.match(r"^/api/projects/(\d+)/files$", rel)
+            if mf:
+                self._upload_file(sess, int(mf.group(1))); return
+            self._json(404, {"error":"Not found"}); return
+
+        data = _body(self)
+
+        # schedule slots
+        if rel == "/api/schedule_slots":
+            uid = int(data.get("user_id") or 0)
+            prj = int(data.get("project_id") or 0)
+            sd  = (data.get("slot_date","") or "").strip()
+            hs  = int(data.get("hour_start") or 0)
+            he  = int(data.get("hour_end") or 0)
+            if not uid or not prj or not sd or he <= hs:
+                self._json(400, {"error":"Datos inválidos"}); return
+            sid = run("""INSERT INTO schedule_slots
+                (user_id,project_id,slot_date,hour_start,hour_end,notes)
+                VALUES(?,?,?,?,?,?)""",
+                (uid, prj, sd, hs, he, data.get("notes","")))
+            self._json(201, {"id":sid}); return
 
         # projects
         if rel == "/api/projects":
@@ -2986,6 +3440,21 @@ class Handler(BaseHTTPRequestHandler):
             uid = int(m.group(1))
             if uid == sess["id"]: self._json(400, {"error":"No puedes eliminarte a ti mismo"}); return
             run("DELETE FROM users WHERE id=?", (uid,))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/schedule_slots/(\d+)$", rel)
+        if m:
+            run("DELETE FROM schedule_slots WHERE id=?", (int(m.group(1)),))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/project_files/(\d+)$", rel)
+        if m:
+            pf = r2d(q1("SELECT * FROM project_files WHERE id=?", (int(m.group(1)),)))
+            if pf:
+                fpath = os.path.join(FILES_DIR, str(pf['project_id']), pf['filename'])
+                try: os.remove(fpath)
+                except: pass
+                run("DELETE FROM project_files WHERE id=?", (int(m.group(1)),))
             self._json(200, {"ok":True}); return
 
         self._json(404, {"error":"Not found"})
