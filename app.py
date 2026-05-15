@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NuvoDesk v2 — Nuvolink field project & materials management."""
+"""NuvoDesk v3 — Nuvolink field project & materials management."""
 
 import os, json, sqlite3, hashlib, secrets, threading, re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -245,16 +245,17 @@ def _pbadge(priority):
 def _css():
     return """
 :root{
-  --bg:#f0f4f8;--bg2:#fff;--bg3:#f8fafc;--bg4:#eef2f7;
+  --bg:#eef2f7;--bg2:#fff;--bg3:#f8fafc;--bg4:#f0f5fb;
   --text:#1a2536;--muted:#64748b;--border:#dce4ee;
-  --blue:#1558c2;--blue-dim:rgba(21,88,194,.08);
-  --green:#15803d;--green-dim:rgba(21,128,61,.1);
-  --amber:#b45309;--amber-dim:rgba(180,83,9,.08);
-  --red:#dc2626;--red-dim:rgba(220,38,38,.08);
-  --violet:#6d28d9;--violet-dim:rgba(109,40,217,.08);
-  --teal:#0d9488;
-  --side-bg:#192e4a;--side-text:#c8d8ec;--sidebar-w:220px;
-  --radius:8px;--shadow:0 1px 4px rgba(0,0,0,.08);
+  --blue:#2563eb;--blue-dim:rgba(37,99,235,.09);
+  --green:#16a34a;--green-dim:rgba(22,163,74,.1);
+  --amber:#d97706;--amber-dim:rgba(217,119,6,.09);
+  --red:#dc2626;--red-dim:rgba(220,38,38,.09);
+  --violet:#7c3aed;--violet-dim:rgba(124,58,237,.09);
+  --teal:#0d9488;--teal-dim:rgba(13,148,136,.09);
+  --side-bg:#0f1f35;--side-text:#94aec8;--sidebar-w:228px;
+  --radius:10px;--shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+  --shadow-md:0 4px 12px rgba(0,0,0,.09),0 2px 4px rgba(0,0,0,.05);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;
@@ -265,66 +266,105 @@ button{font-family:inherit;cursor:pointer}
 /* ── sidebar ── */
 #sidebar{width:var(--sidebar-w);background:var(--side-bg);color:var(--side-text);
   display:flex;flex-direction:column;min-height:100vh;
-  position:fixed;top:0;left:0;z-index:200;transition:transform .22s ease}
-#sidebar .logo{padding:20px 16px 12px;font-size:1.15rem;font-weight:700;
-  color:#fff;border-bottom:1px solid rgba(255,255,255,.08)}
-#sidebar .logo span{color:#4db6ac;font-size:.65rem;display:block;letter-spacing:1.5px;margin-top:2px}
-#sidebar nav{flex:1;padding:10px 0;overflow-y:auto}
-#sidebar nav a{display:flex;align-items:center;gap:10px;padding:10px 18px;
-  color:var(--side-text);font-size:.88rem;border-left:3px solid transparent;transition:.15s}
-#sidebar nav a:hover,#sidebar nav a.active{background:rgba(255,255,255,.1);color:#fff;
-  border-left-color:#4db6ac}
-#sidebar nav a .ic{width:20px;text-align:center;font-size:1rem;flex-shrink:0}
-#sidebar .user-area{padding:14px 16px;border-top:1px solid rgba(255,255,255,.08);font-size:.8rem}
-#sidebar .user-area strong{color:#fff;display:block;margin-bottom:2px}
-#sidebar .user-area a{color:#94a3b8;font-size:.75rem}
+  position:fixed;top:0;left:0;z-index:200;transition:transform .22s ease;flex-shrink:0}
+/* logo */
+.nd-logo{padding:15px 13px 13px;border-bottom:1px solid rgba(255,255,255,.07);
+  display:flex;align-items:center;gap:10px;overflow:hidden;flex-shrink:0}
+.nd-logo-mark{width:33px;height:33px;background:linear-gradient(135deg,#4db6ac,#26a69a);
+  border-radius:8px;display:flex;align-items:center;justify-content:center;
+  font-size:1.05rem;font-weight:900;color:#fff;flex-shrink:0}
+.nd-logo-text{overflow:hidden;min-width:0}
+.nd-logo-name{font-size:1rem;font-weight:800;color:#fff;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;line-height:1.2;letter-spacing:-.2px}
+.nd-logo-sub{font-size:.52rem;color:#4db6ac;letter-spacing:1.8px;text-transform:uppercase;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;display:block}
+/* sidebar search */
+.sb-search{padding:9px 11px 9px;border-bottom:1px solid rgba(255,255,255,.07);position:relative}
+.sb-search-inner{position:relative;display:flex;align-items:center}
+.sb-search-inner::before{content:'⌕';position:absolute;left:9px;color:#64748b;
+  font-size:1rem;pointer-events:none}
+.sb-search-inner input{width:100%;padding:6px 10px 6px 27px;border-radius:18px;border:none;
+  background:rgba(255,255,255,.08);color:#e2eaf3;font-size:.8rem;outline:none;
+  transition:background .15s;font-family:inherit}
+.sb-search-inner input::placeholder{color:#4a6077}
+.sb-search-inner input:focus{background:rgba(255,255,255,.13)}
+.search-drop{position:absolute;left:11px;right:11px;top:calc(100% + 3px);background:#fff;
+  border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.25);z-index:400;
+  max-height:300px;overflow-y:auto;display:none}
+.search-drop.open{display:block}
+.search-item{display:block;padding:9px 13px;text-decoration:none;
+  border-bottom:1px solid #f0f4f8;transition:background .1s;cursor:pointer}
+.search-item:last-child{border-bottom:none}
+.search-item:hover{background:#f4f8ff}
+.search-item-type{font-size:.63rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.8px;font-weight:700}
+.search-item-title{font-weight:600;color:#1a2536;margin-top:1px;font-size:.86rem}
+.search-item-sub{font-size:.75rem;color:#64748b}
+/* nav */
+#sidebar nav{flex:1;padding:6px 0;overflow-y:auto}
+#sidebar nav a{display:flex;align-items:center;gap:10px;padding:9px 14px 9px 16px;
+  color:var(--side-text);font-size:.86rem;font-weight:500;
+  border-left:3px solid transparent;transition:.15s;margin:1px 8px 1px 0;border-radius:0 7px 7px 0}
+#sidebar nav a:hover{background:rgba(255,255,255,.07);color:#c8d8ec}
+#sidebar nav a.active{background:rgba(77,182,172,.12);color:#4db6ac;border-left-color:#4db6ac}
+#sidebar nav a .ic{width:20px;text-align:center;font-size:.95rem;flex-shrink:0}
+#sidebar .user-area{padding:12px 14px;border-top:1px solid rgba(255,255,255,.07);font-size:.8rem}
+#sidebar .user-area strong{color:#e2eaf3;display:block;margin-bottom:2px;font-size:.84rem}
+#sidebar .user-area a{color:#4a6077;font-size:.75rem;transition:color .15s}
+#sidebar .user-area a:hover{color:#94aec8}
 
-/* ── overlay (mobile) ── */
-#overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:199}
+/* ── overlay ── */
+#overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:199;backdrop-filter:blur(2px)}
 #overlay.open{display:block}
 
 /* ── main ── */
-#main{margin-left:var(--sidebar-w);flex:1;padding:26px 30px;min-width:0}
+#main{margin-left:var(--sidebar-w);flex:1;padding:28px 32px;min-width:0}
 
 /* ── bottom nav (mobile only) ── */
 #bottom-nav{display:none}
 
 /* ── headings ── */
-h1{font-size:1.35rem;font-weight:700;color:var(--text);margin-bottom:20px}
+h1{font-size:1.35rem;font-weight:700;color:var(--text);margin-bottom:20px;letter-spacing:-.3px}
 h2{font-size:1.05rem;font-weight:700;margin-bottom:14px}
 h3{font-size:.92rem;font-weight:700;margin-bottom:8px}
 
 /* ── cards ── */
 .card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
-  padding:20px;margin-bottom:18px;box-shadow:var(--shadow)}
-.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px;margin-bottom:22px}
+  padding:22px;margin-bottom:18px;box-shadow:var(--shadow)}
+.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:14px;margin-bottom:22px}
 .kpi{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
-  padding:16px 18px;box-shadow:var(--shadow)}
-.kpi .val{font-size:1.9rem;font-weight:700;line-height:1}
-.kpi .lbl{font-size:.75rem;color:var(--muted);margin-top:5px;text-transform:uppercase;letter-spacing:.4px}
+  padding:18px 20px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.kpi::after{content:'';position:absolute;top:0;left:0;bottom:0;width:3px;background:var(--blue)}
+.kpi.g::after{background:var(--green)}
+.kpi.a::after{background:var(--amber)}
+.kpi.r::after{background:var(--red)}
+.kpi .val{font-size:2rem;font-weight:800;line-height:1;letter-spacing:-.5px}
+.kpi .lbl{font-size:.7rem;color:var(--muted);margin-top:5px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
 
 /* ── table ── */
 .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{width:100%;border-collapse:collapse}
-th{text-align:left;font-size:.72rem;font-weight:600;color:var(--muted);
-  text-transform:uppercase;letter-spacing:.5px;padding:8px 12px;
+th{text-align:left;font-size:.7rem;font-weight:700;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.6px;padding:9px 14px;
   border-bottom:2px solid var(--border);background:var(--bg3);white-space:nowrap}
-td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+td{padding:11px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
 tr:last-child td{border-bottom:none}
-tr:hover td{background:#fafbfd}
+tr:hover td{background:#fafcff}
 
 /* ── buttons ── */
-.btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;
-  border-radius:6px;font-size:.83rem;font-weight:600;border:none;transition:opacity .15s,transform .1s}
+.btn{display:inline-flex;align-items:center;gap:5px;padding:7px 15px;
+  border-radius:8px;font-size:.83rem;font-weight:600;border:none;transition:all .15s}
 .btn:active{transform:scale(.97)}
-.btn:hover{opacity:.85}
-.btn-primary{background:var(--blue);color:#fff}
+.btn:hover{opacity:.87}
+.btn-primary{background:var(--blue);color:#fff;box-shadow:0 1px 4px rgba(37,99,235,.2)}
+.btn-primary:hover{box-shadow:0 3px 10px rgba(37,99,235,.3);transform:translateY(-1px)}
+.btn-primary:active{transform:scale(.97) translateY(0)}
 .btn-success{background:var(--green);color:#fff}
 .btn-danger{background:var(--red);color:#fff}
 .btn-amber{background:var(--amber);color:#fff}
-.btn-ghost{background:transparent;color:var(--blue);border:1px solid var(--blue)}
-.btn-sm{padding:4px 10px;font-size:.78rem}
-.btn-icon{padding:5px 8px;font-size:.9rem;line-height:1}
+.btn-ghost{background:transparent;color:var(--blue);border:1.5px solid var(--blue)}
+.btn-ghost:hover{background:var(--blue-dim)}
+.btn-sm{padding:5px 11px;font-size:.78rem}
+.btn-icon{padding:5px 8px;font-size:.9rem;line-height:1;border-radius:6px}
 
 /* ── form ── */
 .form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
@@ -340,11 +380,11 @@ input:focus,select:focus,textarea:focus{border-color:var(--blue);background:#fff
 textarea{resize:vertical;min-height:70px}
 
 /* ── modal ── */
-.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);
-  z-index:500;align-items:center;justify-content:center;padding:16px}
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(5,15,35,.5);
+  z-index:500;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(3px)}
 .modal-bg.open{display:flex}
-.modal{background:#fff;border-radius:10px;padding:26px;width:min(580px,100%);
-  max-height:92vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.2)}
+.modal{background:#fff;border-radius:14px;padding:28px;width:min(580px,100%);
+  max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.2)}
 .modal h2{margin-bottom:18px;font-size:1.1rem}
 .modal-foot{display:flex;justify-content:flex-end;gap:10px;margin-top:20px;
   padding-top:16px;border-top:1px solid var(--border)}
@@ -369,10 +409,11 @@ textarea{resize:vertical;min-height:70px}
   font-weight:600;background:var(--blue-dim);color:var(--blue);white-space:nowrap}
 
 /* ── alerts ── */
-.alert{padding:10px 14px;border-radius:6px;margin-bottom:14px;font-size:.88rem}
-.alert-red{background:var(--red-dim);color:var(--red);border-left:3px solid var(--red)}
-.alert-amber{background:var(--amber-dim);color:var(--amber);border-left:3px solid var(--amber)}
-.alert-green{background:var(--green-dim);color:var(--green);border-left:3px solid var(--green)}
+.alert{padding:11px 16px;border-radius:8px;margin-bottom:14px;font-size:.88rem;
+  display:flex;align-items:flex-start;gap:10px}
+.alert-red{background:var(--red-dim);color:var(--red);border:1px solid rgba(220,38,38,.2)}
+.alert-amber{background:var(--amber-dim);color:var(--amber);border:1px solid rgba(217,119,6,.2)}
+.alert-green{background:var(--green-dim);color:var(--green);border:1px solid rgba(22,163,74,.2)}
 
 /* ── timeline (work log) ── */
 .timeline{list-style:none}
@@ -413,8 +454,8 @@ textarea{resize:vertical;min-height:70px}
 .mv-out{color:var(--red);font-weight:700}
 
 /* ── progress bar ── */
-.progress{background:#e2e8f0;border-radius:4px;height:6px;overflow:hidden}
-.progress-bar{height:100%;border-radius:4px;background:var(--blue);transition:width .3s}
+.progress{background:#e2e8f0;border-radius:4px;height:5px;overflow:hidden}
+.progress-bar{height:100%;border-radius:4px;background:var(--blue);transition:width .4s ease}
 
 /* ── misc ── */
 .muted{color:var(--muted)}
@@ -447,22 +488,21 @@ textarea{resize:vertical;min-height:70px}
   .form-row,.form-row.cols3{grid-template-columns:1fr}
   .col-m-hide{display:none!important}
   h1{font-size:1.15rem;margin-bottom:14px}
-  .modal{padding:18px;border-radius:8px}
+  .modal{padding:18px;border-radius:10px}
   .tabs{overflow-x:auto;-webkit-overflow-scrolling:touch}
   .tab-btn{white-space:nowrap;padding:8px 12px;font-size:.82rem}
-}
-  /* kanban mobile: horizontal scroll */
   .kanban{grid-template-columns:repeat(4,80vw)!important;overflow-x:auto;
     scroll-snap-type:x mandatory;padding-bottom:8px;gap:10px!important}
-  .kanban-col{scroll-snap-align:start;min-width:0}
+  .kanban-col{scroll-snap-align:start}
   .proj-cards{grid-template-columns:repeat(auto-fill,minmax(260px,300px))!important}
 }
 @media(min-width:769px){
   #menu-btn{display:none!important}
 }
 #menu-btn{position:fixed;top:10px;left:10px;z-index:210;
-  background:var(--side-bg);color:#fff;border:none;border-radius:6px;
-  width:38px;height:38px;font-size:1.1rem;display:flex;align-items:center;justify-content:center}
+  background:var(--side-bg);color:#fff;border:none;border-radius:7px;
+  width:38px;height:38px;font-size:1.1rem;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 2px 8px rgba(0,0,0,.2)}
 
 /* ── kanban board ── */
 .kanban{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;align-items:start;margin-bottom:20px}
@@ -476,11 +516,11 @@ textarea{resize:vertical;min-height:70px}
 .kanban-col-hd .col-count{background:var(--bg2);border:1px solid var(--border);
   border-radius:10px;padding:1px 7px;font-size:.72rem;font-weight:700;color:var(--muted)}
 .kanban-cards{min-height:60px}
-.task-card{background:#fff;border:1px solid var(--border);border-radius:7px;
-  padding:11px 13px;margin-bottom:8px;cursor:grab;box-shadow:0 1px 3px rgba(0,0,0,.06);
-  user-select:none;transition:box-shadow .15s,transform .1s;position:relative}
-.task-card:hover{box-shadow:0 3px 10px rgba(0,0,0,.1)}
-.task-card.dragging{opacity:.45;transform:rotate(1.5deg);box-shadow:0 6px 20px rgba(0,0,0,.18);cursor:grabbing}
+.task-card{background:#fff;border:1px solid var(--border);border-radius:8px;
+  padding:11px 13px;margin-bottom:8px;cursor:grab;box-shadow:var(--shadow);
+  user-select:none;transition:box-shadow .15s,transform .12s;position:relative}
+.task-card:hover{box-shadow:var(--shadow-md);transform:translateY(-1px)}
+.task-card.dragging{opacity:.4;transform:rotate(1.5deg);box-shadow:0 8px 24px rgba(0,0,0,.18);cursor:grabbing}
 .task-card-title{font-weight:600;font-size:.87rem;line-height:1.35;margin-bottom:6px}
 .task-card-foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:7px}
 .task-card-strip{position:absolute;left:0;top:0;bottom:0;width:4px;border-radius:7px 0 0 7px}
@@ -552,7 +592,19 @@ def _shell(page, user, content, extra_head=""):
 <button id="menu-btn" onclick="toggleSidebar()" aria-label="Menú">☰</button>
 <div id="overlay" onclick="closeSidebar()"></div>
 <div id="sidebar">
-  <div class="logo">NuvoDesk<span>NUVOLINK TELECOMS</span></div>
+  <div class="nd-logo">
+    <div class="nd-logo-mark">N</div>
+    <div class="nd-logo-text">
+      <div class="nd-logo-name">NuvoDesk</div>
+      <span class="nd-logo-sub">Nuvolink · Telecoms</span>
+    </div>
+  </div>
+  <div class="sb-search">
+    <div class="sb-search-inner">
+      <input id="search-inp" type="search" placeholder="Buscar proyectos, tareas..." autocomplete="off">
+    </div>
+    <div id="search-results" class="search-drop"></div>
+  </div>
   <nav>{sidebar_links}</nav>
   <div class="user-area">
     <strong>{_esc(user.get('display_name',''))}</strong>
@@ -562,6 +614,7 @@ def _shell(page, user, content, extra_head=""):
 <div id="main">{content}</div>
 <nav id="bottom-nav">{bottom_links}</nav>
 <script>
+var bp={json.dumps(BP)};
 function toggleSidebar(){{
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('overlay').classList.toggle('open');
@@ -570,11 +623,45 @@ function closeSidebar(){{
   document.getElementById('sidebar').classList.remove('open');
   document.getElementById('overlay').classList.remove('open');
 }}
-// close sidebar on nav click (mobile)
 document.querySelectorAll('#sidebar nav a').forEach(function(a){{
   a.addEventListener('click', function(){{
     if(window.innerWidth<=768) closeSidebar();
   }});
+}});
+var _st=null;
+document.getElementById('search-inp').addEventListener('input',function(){{
+  clearTimeout(_st);
+  var q=this.value.trim();
+  var drop=document.getElementById('search-results');
+  if(q.length<2){{drop.classList.remove('open');return;}}
+  _st=setTimeout(function(){{
+    fetch(bp+'/api/search?q='+encodeURIComponent(q))
+      .then(function(r){{return r.json();}})
+      .then(function(d){{_renderSearch(d);}});
+  }},250);
+}});
+function _renderSearch(results){{
+  var el=document.getElementById('search-results');
+  if(!results.length){{
+    el.innerHTML='<div class="search-item" style="color:#94a3b8;cursor:default">Sin resultados</div>';
+    el.classList.add('open');return;
+  }}
+  el.innerHTML=results.map(function(r){{
+    var url=bp+(r.type==='proyecto'?'/projects/'+r.id:
+                r.type==='tarea'?'/projects/'+r.pid:'/inventory');
+    var t=(r.title||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    var s=(r.sub||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    return '<a class="search-item" href="'+url+'">'
+      +'<div class="search-item-type">'+r.type+'</div>'
+      +'<div class="search-item-title">'+t+'</div>'
+      +(s?'<div class="search-item-sub">'+s+'</div>':'')
+      +'</a>';
+  }}).join('');
+  el.classList.add('open');
+}}
+document.addEventListener('click',function(e){{
+  if(!e.target.closest('.sb-search'))
+    document.getElementById('search-results').classList.remove('open');
 }});
 </script>
 </body>
@@ -1084,7 +1171,10 @@ def _project_detail(user, pid):
     &nbsp;{_badge(p["status"])}
     &nbsp;<span style="color:{pcolor};font-weight:600;font-size:.8rem">▲ {plabel}</span>
   </div>
-  <button class="btn btn-ghost btn-sm" onclick="editProject({json.dumps(p)})">✏️ Editar</button>
+  <div style="display:flex;gap:8px">
+    <a href="{BP}/projects/{pid}/report" target="_blank" class="btn btn-ghost btn-sm">🖨 Informe</a>
+    <button class="btn btn-ghost btn-sm" onclick="editProject({json.dumps(p)})">✏️ Editar</button>
+  </div>
 </div>
 {desc_html}
 
@@ -1970,6 +2060,142 @@ function delUser(id){{
     return _shell("users", user, content)
 
 
+# ── project report ────────────────────────────────────────────────────────────
+def _project_report(user, pid):
+    p = r2d(q1("""SELECT p.*,u.display_name tech FROM projects p
+        LEFT JOIN users u ON u.id=p.assigned_to WHERE p.id=?""", (pid,)))
+    if not p: return None
+    tasks = rs(q("SELECT * FROM tasks WHERE project_id=? ORDER BY status,priority DESC", (pid,)))
+    assignments = rs(q("""SELECT a.*,m.name mat_name,m.code mat_code,m.unit mat_unit
+        FROM assignments a JOIN materials m ON m.id=a.material_id
+        WHERE a.project_id=? ORDER BY m.name""", (pid,)))
+    logs = rs(q("""SELECT l.*,u.display_name uname
+        FROM project_logs l JOIN users u ON u.id=l.user_id
+        WHERE l.project_id=? ORDER BY l.created_at""", (pid,)))
+    hours_total = q1("SELECT COALESCE(SUM(hours),0) FROM project_logs WHERE project_id=?", (pid,))
+    h_logged = hours_total[0] if hours_total else 0
+    h_est = p.get("estimated_hours") or 0
+    task_done = sum(1 for t in tasks if t['status']=='done')
+    now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+    st_label = STATUS_LABEL.get(p['status'], p['status'])
+    pri_label = {"low":"Baja","normal":"Normal","high":"Alta","urgent":"Urgente"}.get(p['priority'],p['priority'])
+
+    t_rows = ""
+    for s, slbl in [("blocked","🔴 Bloqueado"),("in_progress","🔵 En curso"),
+                    ("pending","⚪ Pendiente"),("done","✅ Hecho")]:
+        for t in [x for x in tasks if x['status']==s]:
+            pril = {"low":"Baja","normal":"Normal","high":"Alta","urgent":"Urgente"}.get(t['priority'],'')
+            desc_part = f'<br><small style="color:#64748b">{_esc(t["description"])}</small>' if t.get("description") else ""
+            t_rows += (f'<tr><td>{_esc(t["title"])}{desc_part}</td>'
+                f'<td>{slbl}</td><td>{pril}</td>'
+                f'<td>{_esc((t["due_date"] or "—")[:10])}</td></tr>')
+
+    m_rows = "".join(
+        f'<tr><td><code>{_esc(a["mat_code"])}</code> {_esc(a["mat_name"])}</td>'
+        f'<td style="text-align:center">{a["qty_requested"]}</td>'
+        f'<td style="text-align:center">{a["qty_assigned"]}</td>'
+        f'<td style="text-align:center">{a["qty_consumed"]}</td>'
+        f'<td style="text-align:center">{a["qty_returned"]}</td>'
+        f'<td>{STATUS_LABEL.get(a["status"],a["status"])}</td>'
+        f'<td>{_esc(a["mat_unit"])}</td></tr>' for a in assignments)
+
+    log_html = ""
+    for l in logs:
+        h_str = f' · {l["hours"]}h' if l["hours"] else ""
+        log_html += (f'<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #e2e8f0">'
+            f'<div style="font-size:.78rem;color:#64748b;margin-bottom:4px">'
+            f'<strong>{_esc(l["uname"])}</strong> — {_esc(l["created_at"][:16])}{_esc(h_str)}</div>'
+            f'<div style="line-height:1.55;white-space:pre-wrap;font-size:.9rem">{_esc(l["body"])}</div></div>')
+
+    meta = [("Cliente",p.get("client","")),("Referencia",p.get("reference","")),
+            ("Dirección",p.get("address","")),("Técnico",p.get("tech","")),
+            ("Contacto obra",p.get("contact_name","")),("Teléfono",p.get("contact_phone","")),
+            ("Inicio",(p.get("start_date") or "")[:10]),("Límite",(p.get("due_date") or "")[:10]),
+            ("Estado",st_label),("Prioridad",pri_label),
+            ("Horas estimadas",f'{h_est}h' if h_est else ""),
+            ("Horas registradas",f'{h_logged}h'),
+            ("Tareas completadas",f'{task_done}/{len(tasks)}')]
+    meta_html = "".join(
+        f'<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid #f0f4f8;font-size:.88rem">'
+        f'<span style="min-width:160px;color:#64748b;font-weight:600">{_esc(k)}</span>'
+        f'<span>{_esc(str(v))}</span></div>'
+        for k,v in meta if v)
+
+    tasks_section = ('<p style="color:#64748b">Sin tareas registradas</p>' if not tasks else
+        f'<div class="tbl-wrap"><table style="font-size:.87rem"><thead><tr>'
+        f'<th>Tarea</th><th>Estado</th><th>Prioridad</th><th>Vencimiento</th>'
+        f'</tr></thead><tbody>{t_rows}</tbody></table></div>')
+    mats_section = ('<p style="color:#64748b">Sin materiales asignados</p>' if not assignments else
+        f'<div class="tbl-wrap"><table style="font-size:.87rem"><thead><tr>'
+        f'<th>Material</th><th style="text-align:center">Solic.</th>'
+        f'<th style="text-align:center">Asgn.</th><th style="text-align:center">Cons.</th>'
+        f'<th style="text-align:center">Dev.</th><th>Estado</th><th>Ud</th>'
+        f'</tr></thead><tbody>{m_rows}</tbody></table></div>')
+    logs_section = ('<p style="color:#64748b">Sin entradas en el diario</p>' if not logs else
+        f'<div>{log_html}</div>')
+
+    return f"""<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Informe — {_esc(p["name"])}</title>
+<style>
+{_css()}
+body{{display:block;background:#f0f4f8}}
+.rpage{{max-width:860px;margin:0 auto;padding:32px;background:#fff;box-shadow:0 0 40px rgba(0,0,0,.08)}}
+.rhead{{display:flex;justify-content:space-between;align-items:flex-start;
+  margin-bottom:28px;padding-bottom:20px;border-bottom:3px solid #0f1f35}}
+.rhead h1{{font-size:1.4rem;margin-bottom:4px}}
+.rlogo{{font-weight:800;font-size:1rem;color:#0f1f35;text-align:right}}
+.rlogo span{{display:block;font-size:.58rem;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin-top:2px}}
+.rsec{{margin-bottom:26px}}
+.rsec h2{{font-size:.95rem;font-weight:700;color:#1a2536;margin-bottom:10px;
+  padding-bottom:6px;border-bottom:1.5px solid #dce4ee;text-transform:uppercase;letter-spacing:.5px}}
+@media print{{
+  body{{background:#fff!important}}
+  .no-print{{display:none!important}}
+  .rpage{{padding:0;max-width:100%;box-shadow:none}}
+  @page{{margin:1.5cm}}
+}}
+</style>
+</head>
+<body>
+<div class="no-print" style="background:#0f1f35;padding:10px 20px;display:flex;align-items:center;justify-content:space-between">
+  <a href="{BP}/projects/{pid}" style="color:#4db6ac;font-size:.88rem">← Volver al proyecto</a>
+  <button onclick="window.print()" style="background:#4db6ac;color:#fff;border:none;
+    padding:6px 14px;border-radius:6px;cursor:pointer;font-size:.83rem;font-weight:600">
+    🖨 Imprimir / PDF</button>
+</div>
+<div class="rpage">
+  <div class="rhead">
+    <div>
+      <h1>{_esc(p["name"])}</h1>
+      <div style="color:#64748b;font-size:.9rem">{_esc(p.get("description",""))}</div>
+    </div>
+    <div class="rlogo">NuvoDesk<span>Nuvolink · Telecoms</span>
+      <div style="font-size:.7rem;color:#94a3b8;margin-top:5px">Generado: {now_str}</div>
+    </div>
+  </div>
+  <div class="rsec">
+    <h2>Información del proyecto</h2>
+    {meta_html}
+  </div>
+  <div class="rsec">
+    <h2>Tareas ({len(tasks)})</h2>
+    {tasks_section}
+  </div>
+  <div class="rsec">
+    <h2>Materiales ({len(assignments)})</h2>
+    {mats_section}
+  </div>
+  <div class="rsec">
+    <h2>Diario de obra ({len(logs)} entradas · {h_logged}h)</h2>
+    {logs_section}
+  </div>
+</div>
+</body></html>"""
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 def _body(h) -> dict:
     n = int(h.headers.get("Content-Length", 0))
@@ -2059,6 +2285,25 @@ class Handler(BaseHTTPRequestHandler):
         if rel == "/api/kit":
             if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
             self._json(200, rs(q("SELECT k.*,m.name mat_name,m.code mat_code FROM tech_kit k JOIN materials m ON m.id=k.material_id"))); return
+
+        if rel == "/api/search":
+            q_str = (qs.get("q",[""])[0] or "").strip()
+            if len(q_str) < 2:
+                self._json(200, []); return
+            like = f"%{q_str}%"
+            results = []
+            for proj in rs(q("SELECT id,name,client,reference FROM projects WHERE name LIKE ? OR client LIKE ? OR reference LIKE ? LIMIT 5", (like,like,like))):
+                results.append({"type":"proyecto","id":proj["id"],"title":proj["name"],"sub":proj["client"]})
+            for t in rs(q("SELECT t.id,t.title,p.id pid,p.name pname FROM tasks t JOIN projects p ON p.id=t.project_id WHERE t.title LIKE ? LIMIT 5", (like,))):
+                results.append({"type":"tarea","id":t["id"],"pid":t["pid"],"title":t["title"],"sub":t["pname"]})
+            for mat in rs(q("SELECT id,code,name FROM materials WHERE name LIKE ? OR code LIKE ? LIMIT 4", (like,like))):
+                results.append({"type":"material","id":mat["id"],"title":mat["name"],"sub":mat["code"]})
+            self._json(200, results); return
+
+        m = re.match(r"^/projects/(\d+)/report$", rel)
+        if m:
+            html = _project_report(sess, int(m.group(1)))
+            self._send(200 if html else 404, html or "Not found"); return
 
         self._send(404, "Not found")
 
