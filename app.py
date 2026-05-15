@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """NuvoDesk v3 — Nuvolink field project & materials management."""
 
-import os, json, sqlite3, hashlib, secrets, threading, re
+import os, json, sqlite3, hashlib, secrets, threading, re, calendar as _cal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote_plus
-from datetime import datetime, date as _date
+from datetime import datetime, date as _date, timedelta
 
 PORT     = int(os.environ.get("PORT", 8014))
 BP       = os.environ.get("BASE_PATH", "").rstrip("/")
@@ -177,6 +177,16 @@ CREATE TABLE IF NOT EXISTS stock_movements (
     notes       TEXT DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS project_members (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    start_date TEXT DEFAULT '',
+    end_date   TEXT DEFAULT '',
+    notes      TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(project_id, user_id)
+);
 """
 
 MIGRATIONS = [
@@ -215,6 +225,10 @@ def _now() -> str:
 def _stock_move(material_id, qty, direction, source, ref_id, user_id, notes=""):
     run("INSERT INTO stock_movements (material_id,qty,direction,source,ref_id,user_id,notes) VALUES (?,?,?,?,?,?,?)",
         (material_id, qty, direction, source, ref_id, user_id, notes))
+
+PROJ_COLORS = ["#2563eb","#16a34a","#d97706","#dc2626","#7c3aed","#0d9488",
+               "#db2777","#ea580c","#65a30d","#0284c7"]
+def _pcolor(pid): return PROJ_COLORS[int(pid) % len(PROJ_COLORS)]
 
 STATUS_LABEL = {
     "active":"Activo","paused":"Pausado","completed":"Completado","cancelled":"Cancelado",
@@ -380,8 +394,8 @@ input:focus,select:focus,textarea:focus{border-color:var(--blue);background:#fff
 textarea{resize:vertical;min-height:70px}
 
 /* ── modal ── */
-.modal-bg{display:none;position:fixed;inset:0;background:rgba(5,15,35,.5);
-  z-index:500;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(3px)}
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(5,15,35,.55);
+  z-index:500;align-items:center;justify-content:center;padding:16px}
 .modal-bg.open{display:flex}
 .modal{background:#fff;border-radius:14px;padding:28px;width:min(580px,100%);
   max-height:92vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.2)}
@@ -410,10 +424,44 @@ textarea{resize:vertical;min-height:70px}
 
 /* ── alerts ── */
 .alert{padding:11px 16px;border-radius:8px;margin-bottom:14px;font-size:.88rem;
-  display:flex;align-items:flex-start;gap:10px}
+  display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap}
 .alert-red{background:var(--red-dim);color:var(--red);border:1px solid rgba(220,38,38,.2)}
 .alert-amber{background:var(--amber-dim);color:var(--amber);border:1px solid rgba(217,119,6,.2)}
 .alert-green{background:var(--green-dim);color:var(--green);border:1px solid rgba(22,163,74,.2)}
+
+/* ── member avatars ── */
+.avatar-row{display:flex;gap:3px;flex-wrap:wrap;margin-top:6px}
+.avatar{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:.6rem;font-weight:700;color:#fff;flex-shrink:0;
+  border:2px solid #fff;cursor:default}
+.avatar-sm{width:20px;height:20px;font-size:.5rem;border-width:1.5px}
+
+/* ── calendar ── */
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:20px}
+.cal-dow{text-align:center;font-size:.68rem;font-weight:700;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.5px;padding:4px 0}
+.cal-day{background:var(--bg2);border:1px solid var(--border);border-radius:7px;
+  min-height:80px;padding:5px;font-size:.78rem;position:relative;overflow:hidden}
+.cal-day.today{border-color:var(--blue);background:#f0f5ff}
+.cal-day.other-month{background:var(--bg3);opacity:.55}
+.cal-day-num{font-weight:700;font-size:.75rem;color:var(--muted);margin-bottom:3px}
+.cal-day.today .cal-day-num{color:var(--blue)}
+.cal-chip{display:block;padding:2px 5px;border-radius:4px;font-size:.65rem;
+  font-weight:600;color:#fff;margin-bottom:2px;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;cursor:default}
+
+/* ── matrix (calendar list) ── */
+.matrix-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:16px}
+.matrix{border-collapse:collapse;white-space:nowrap;font-size:.72rem}
+.matrix th{padding:5px 8px;border:1px solid var(--border);background:var(--bg3);
+  font-weight:700;text-align:center;position:sticky;left:0;z-index:2}
+.matrix th.tech-col{text-align:left;min-width:120px;left:0;z-index:3}
+.matrix td{padding:2px 3px;border:1px solid var(--border);min-width:28px;
+  text-align:center;vertical-align:middle}
+.matrix-cell{display:block;padding:1px 4px;border-radius:3px;color:#fff;
+  font-weight:600;font-size:.6rem;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;max-width:48px}
+.matrix td.today-col{background:#f0f5ff}
 
 /* ── timeline (work log) ── */
 .timeline{list-style:none}
@@ -560,11 +608,12 @@ textarea{resize:vertical;min-height:70px}
 def _shell(page, user, content, extra_head=""):
     bp = BP
     nav = [
-        ("dashboard", f"{bp}/",          "⊞",  "Dashboard"),
-        ("projects",  f"{bp}/projects",  "📋", "Proyectos"),
-        ("inventory", f"{bp}/inventory", "📦", "Inventario"),
-        ("kit",       f"{bp}/kit",       "🎒", "Kit campo"),
-        ("users",     f"{bp}/users",     "👥", "Usuarios"),
+        ("dashboard", f"{bp}/",           "⊞",  "Dashboard"),
+        ("projects",  f"{bp}/projects",   "📋", "Proyectos"),
+        ("calendar",  f"{bp}/calendar",   "🗓", "Calendario"),
+        ("inventory", f"{bp}/inventory",  "📦", "Inventario"),
+        ("kit",       f"{bp}/kit",        "🎒", "Kit campo"),
+        ("users",     f"{bp}/users",      "👥", "Usuarios"),
     ]
     sidebar_links = ""
     bottom_links = ""
@@ -795,7 +844,8 @@ def _projects_page(user, filter_status="", view="cards"):
     params = (filter_status,) if filter_status else ()
     projects = rs(q(f"""SELECT p.*,u.display_name tech,
         (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id) task_t,
-        (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id AND t.status='done') task_d
+        (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id AND t.status='done') task_d,
+        (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id=p.id) member_count
         FROM projects p LEFT JOIN users u ON u.id=p.assigned_to
         {where}
         ORDER BY CASE p.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
@@ -828,6 +878,9 @@ def _projects_page(user, filter_status="", view="cards"):
                 f'<div class="proj-card-prog-label">'
                 f'<span>Tareas</span><span>{p["task_d"]}/{p["task_t"]}</span></div>'
                 f'<div class="progress"><div class="progress-bar" style="width:{pct}%"></div></div></div>')
+        mc = p.get('member_count', 0)
+        members_html = (f'<span style="font-size:.75rem;color:var(--muted)">👥 {mc}</span>' if mc else "")
+        safe_p = {k: v for k, v in dict(p).items() if isinstance(v, (str, int, float, type(None)))}
         cards_html += (
             f'<a class="proj-card" href="{BP}/projects/{p["id"]}">'
             f'<div class="proj-card-strip" style="background:{sc}"></div>'
@@ -841,8 +894,9 @@ def _projects_page(user, filter_status="", view="cards"):
             f'{prog_html}'
             f'</div>'
             f'<div class="proj-card-foot">'
-            f'<span>{due_html}</span><span>{tech_html}</span>'
-            f'<button onclick="event.preventDefault();event.stopPropagation();editProject({json.dumps(dict(p))})" '
+            f'<span>{due_html}</span>'
+            f'<span style="display:flex;align-items:center;gap:6px">{members_html}{tech_html}</span>'
+            f'<button onclick="event.preventDefault();event.stopPropagation();editProject({json.dumps(safe_p)})" '
             f'class="btn btn-ghost btn-icon">✏️</button>'
             f'</div></a>')
 
@@ -854,13 +908,14 @@ def _projects_page(user, filter_status="", view="cards"):
                 f'<div class="progress-bar" style="width:{pct}%"></div></div>'
                 f'<span class="muted" style="font-size:.72rem;margin-left:4px">{pct}%</span>')
         ref_html = f'<br><span class="muted" style="font-size:.72rem">#{_esc(p["reference"])}</span>' if p.get("reference") else ""
+        safe_p2 = {k: v for k, v in dict(p).items() if isinstance(v, (str, int, float, type(None)))}
         rows += (f'<tr><td><a href="{BP}/projects/{p["id"]}" class="fw7">{_esc(p["name"])}</a>'
             f'{ref_html}<br><span class="muted" style="font-size:.75rem">{_esc(p["client"])}</span></td>'
             f'<td>{_badge(p["status"])}</td><td class="col-m-hide">{_pbadge(p["priority"])}</td>'
             f'<td class="muted col-m-hide">{_esc(p["tech"] or "—")}</td>'
             f'<td class="muted col-m-hide">{_esc((p["due_date"] or "—")[:10])}</td>'
             f'<td class="col-m-hide">{prog}</td>'
-            f'<td><button class="btn btn-ghost btn-icon" onclick="editProject({json.dumps(dict(p))})">✏️</button>'
+            f'<td><button class="btn btn-ghost btn-icon" onclick="editProject({json.dumps(safe_p2)})">✏️</button>'
             f'<a href="{BP}/projects/{p["id"]}" class="btn btn-ghost btn-icon">→</a></td></tr>')
 
     empty = "<p class='muted' style='text-align:center;padding:32px;grid-column:1/-1'>Sin proyectos todavía</p>"
@@ -898,7 +953,7 @@ def _projects_page(user, filter_status="", view="cards"):
 <div class="modal">
   <h2 id="proj-modal-title">Nuevo proyecto</h2>
   <form id="proj-form">
-  <input type="hidden" id="proj-id">
+  <input type="hidden" id="f-id">
   <div class="form-row">
     <div><label>Nombre</label><input id="f-name" required></div>
     <div><label>Referencia / Ticket</label><input id="f-ref" placeholder="OT-2026-001"></div>
@@ -1079,6 +1134,14 @@ def _project_detail(user, pid):
         FROM project_logs l JOIN users u ON u.id=l.user_id
         WHERE l.project_id=? ORDER BY l.created_at DESC LIMIT 40""", (pid,)))
 
+    members = rs(q("""SELECT pm.*,u.display_name uname,u.role urole
+        FROM project_members pm JOIN users u ON u.id=pm.user_id
+        WHERE pm.project_id=? ORDER BY pm.start_date,u.display_name""", (pid,)))
+
+    all_users = rs(q("SELECT id,display_name,role FROM users WHERE active=1 ORDER BY display_name"))
+    user_opts = "".join(
+        f'<option value="{u["id"]}">{_esc(u["display_name"])}</option>' for u in all_users)
+
     mats = rs(q("SELECT id,code,name,unit,stock_warehouse FROM materials ORDER BY name"))
     mat_opts = "".join(
         f'<option value="{m["id"]}" data-stock="{m["stock_warehouse"]}">'
@@ -1130,6 +1193,33 @@ def _project_detail(user, pid):
             f'<div class="tl-meta">{_esc(l["uname"])} &middot; {_esc(l["created_at"][:16])}{h_badge}</div>'
             f'<div class="tl-text">{_esc(l["body"])}</div></div></li>')
 
+    # ── equipo tab content ──
+    member_rows = ""
+    for mb in members:
+        role_lbl = {"admin":"Admin","technician":"Técnico","backoffice":"Backoffice"}.get(mb['urole'], mb['urole'])
+        initials_m = "".join(w[0].upper() for w in mb['uname'].split()[:2])
+        col = _pcolor(mb['user_id'])
+        date_range = ""
+        if mb.get('start_date') or mb.get('end_date'):
+            date_range = f'{(mb.get("start_date") or "")[:10]} → {(mb.get("end_date") or "")[:10]}'
+        member_rows += (
+            f'<tr>'
+            f'<td style="width:36px"><div class="avatar" style="background:{col}">{_esc(initials_m)}</div></td>'
+            f'<td><span class="fw7">{_esc(mb["uname"])}</span>'
+            f'<br><span class="muted" style="font-size:.75rem">{_esc(role_lbl)}</span></td>'
+            f'<td class="muted col-m-hide" style="font-size:.8rem">{_esc(date_range or "Todo el proyecto")}</td>'
+            f'<td class="muted col-m-hide" style="font-size:.8rem">{_esc(mb.get("notes",""))}</td>'
+            f'<td><button class="btn btn-danger btn-icon" onclick="removeMember({mb["id"]})">✕</button></td>'
+            f'</tr>')
+
+    # member avatars for header
+    member_avatars = "".join(
+        f'<div class="avatar" style="background:{_pcolor(mb["user_id"])}" title="{_esc(mb["uname"])}">'
+        f'{"".join(w[0].upper() for w in mb["uname"].split()[:2])}</div>'
+        for mb in members[:6])
+    if len(members) > 6:
+        member_avatars += f'<div class="avatar" style="background:#94a3b8">+{len(members)-6}</div>'
+
     # ── priority/status display ──
     plabel = {"low":"Baja","normal":"Normal","high":"Alta","urgent":"Urgente"}.get(p['priority'],p['priority'])
     pcolor = PRIORITY_COLOR.get(p['priority'],"#64748b")
@@ -1161,19 +1251,23 @@ def _project_detail(user, pid):
             f'<div class="lbl">Horas registradas</div></div></div>'
             f'<div class="progress" style="margin-top:8px"><div class="progress-bar" style="width:{h_pct}%"></div></div></div>')
 
+    safe_proj = {k: v for k, v in p.items() if isinstance(v, (str, int, float, type(None)))}
     content = f"""
 <div style="margin-bottom:8px"><a href="{BP}/projects" class="muted" style="font-size:.85rem">← Proyectos</a></div>
 <div class="toolbar">
   <div>
     <h1 style="margin-bottom:4px">{_esc(p["name"])}</h1>
-    <span class="muted" style="font-size:.88rem">{_esc(p["client"])}</span>
-    {('&nbsp;<span class="chip">#'+_esc(p["reference"])+'</span>') if p.get("reference") else ""}
-    &nbsp;{_badge(p["status"])}
-    &nbsp;<span style="color:{pcolor};font-weight:600;font-size:.8rem">▲ {plabel}</span>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px">
+      <span class="muted" style="font-size:.88rem">{_esc(p["client"])}</span>
+      {('&nbsp;<span class="chip">#'+_esc(p["reference"])+'</span>') if p.get("reference") else ""}
+      &nbsp;{_badge(p["status"])}
+      &nbsp;<span style="color:{pcolor};font-weight:600;font-size:.8rem">▲ {plabel}</span>
+    </div>
+    {('<div class="avatar-row" style="margin-top:8px">'+member_avatars+'</div>') if member_avatars else ""}
   </div>
-  <div style="display:flex;gap:8px">
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
     <a href="{BP}/projects/{pid}/report" target="_blank" class="btn btn-ghost btn-sm">🖨 Informe</a>
-    <button class="btn btn-ghost btn-sm" onclick="editProject({json.dumps(p)})">✏️ Editar</button>
+    <button class="btn btn-ghost btn-sm" onclick="editProject({json.dumps(safe_proj)})">✏️ Editar</button>
   </div>
 </div>
 {desc_html}
@@ -1182,6 +1276,7 @@ def _project_detail(user, pid):
   <button class="tab-btn active" onclick="showTab('tareas',this)">Tareas ({len(tasks)})</button>
   <button class="tab-btn" onclick="showTab('materiales',this)">Materiales ({len(assignments)})</button>
   <button class="tab-btn" onclick="showTab('diario',this)">Diario ({len(logs)})</button>
+  <button class="tab-btn" onclick="showTab('equipo',this)">👥 Equipo ({len(members)})</button>
   <button class="tab-btn" onclick="showTab('info',this)">Info</button>
 </div>
 
@@ -1244,12 +1339,51 @@ def _project_detail(user, pid):
 {"<ul class='timeline'>" + log_items + "</ul>" if log_items else "<p class='muted' style='text-align:center;padding:20px'>Sin entradas en el diario todavía</p>"}
 </div>
 
+<!-- TAB EQUIPO -->
+<div id="tab-equipo" class="tab-pane">
+<div class="toolbar">
+  <h2>Equipo del proyecto</h2>
+  <button class="btn btn-primary btn-sm" onclick="openAddMember()">+ Añadir persona</button>
+</div>
+<div class="card">
+  <div class="tbl-wrap"><table><thead><tr>
+    <th style="width:36px"></th><th>Técnico</th>
+    <th class="col-m-hide">Período</th><th class="col-m-hide">Notas</th><th></th>
+  </tr></thead><tbody>
+    {member_rows or "<tr><td colspan='5' class='muted' style='text-align:center;padding:20px'>Sin personas asignadas al proyecto</td></tr>"}
+  </tbody></table></div>
+</div>
+<p class="muted" style="font-size:.82rem;padding:0 2px">
+  Las personas aquí asignadas aparecen en el calendario de movimientos de personal.
+</p>
+</div>
+
 <!-- TAB INFO -->
 <div id="tab-info" class="tab-pane">
 <div class="card">
   <table><tbody>{info_rows or "<tr><td class='muted'>Sin datos adicionales</td></tr>"}</tbody></table>
 </div>
 </div>
+
+<!-- MODAL añadir miembro -->
+<div class="modal-bg" id="member-modal">
+<div class="modal" style="max-width:460px">
+  <h2>Añadir al equipo</h2>
+  <div class="form-row single">
+    <div><label>Técnico</label><select id="mb-user">{user_opts}</select></div>
+  </div>
+  <div class="form-row">
+    <div><label>Fecha inicio</label><input type="date" id="mb-start"></div>
+    <div><label>Fecha fin</label><input type="date" id="mb-end"></div>
+  </div>
+  <div class="form-row single">
+    <div><label>Notas</label><input id="mb-notes" placeholder="Rol en el proyecto, turno..."></div>
+  </div>
+  <div class="modal-foot">
+    <button type="button" class="btn btn-ghost" onclick="closeMemberModal()">Cancelar</button>
+    <button class="btn btn-primary" onclick="doAddMember()">Añadir</button>
+  </div>
+</div></div>
 
 <!-- MODAL editar proyecto -->
 <div class="modal-bg" id="proj-modal">
@@ -1631,6 +1765,25 @@ document.getElementById('assign-form').onsubmit=function(e){{
     .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
 }};
 updateStockInfo();
+
+// ── members ──
+function openAddMember(){{document.getElementById('member-modal').classList.add('open');}}
+function closeMemberModal(){{document.getElementById('member-modal').classList.remove('open');}}
+document.getElementById('member-modal').onclick=function(e){{if(e.target===this)closeMemberModal();}};
+function doAddMember(){{
+  var d={{user_id:document.getElementById('mb-user').value,
+    start_date:document.getElementById('mb-start').value,
+    end_date:document.getElementById('mb-end').value,
+    notes:document.getElementById('mb-notes').value}};
+  fetch(bp+'/api/projects/'+pid+'/members',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+}}
+function removeMember(id){{
+  if(!confirm('¿Quitar del equipo?')) return;
+  fetch(bp+'/api/project_members/'+id,{{method:'DELETE'}})
+    .then(function(r){{if(r.ok)location.reload();}});
+}}
 </script>"""
     return _shell("projects", user, content)
 
@@ -1834,13 +1987,14 @@ def _kit_page(user):
 
         item_rows = ""
         for ki in kit_items:
+            mname_safe = _esc(ki["mat_name"]).replace("'", "&#39;")
             item_rows += (f'<tr><td><span class="chip">{_esc(ki["mat_code"])}</span></td>'
                 f'<td>{_esc(ki["mat_name"])}</td>'
                 f'<td style="text-align:center;font-weight:700">{ki["qty"]}</td>'
                 f'<td class="muted">{_esc(ki["mat_unit"])}</td>'
                 f'<td class="muted" style="font-size:.75rem">{_esc(ki["notes"] or "")}</td>'
                 f'<td><button class="btn btn-danger btn-icon" '
-                f'onclick="returnFromKit({ki["id"]},{ki["qty"]},{json.dumps(ki["mat_name"])},{t["id"]})">↩</button></td></tr>')
+                f"onclick=\"returnFromKit({ki['id']},{ki['qty']},'{mname_safe}',{t['id']})\">↩</button></td></tr>")
 
         empty_msg = '<p class="muted" style="padding:12px 0;font-size:.85rem">Kit vacío</p>'
         kit_table = (f'<div class="tbl-wrap"><table><thead><tr><th>Cód</th><th>Material</th>'
@@ -1848,13 +2002,14 @@ def _kit_page(user):
             f'<tbody>{item_rows}</tbody></table></div>') if kit_items else empty_msg
 
         tid = t['id']
+        dname_safe = _esc(t['display_name']).replace("'", "&#39;")
         cards += f"""<div class="kit-card">
   <h3>👤 {_esc(t['display_name'])} <span class="role-badge">{_esc(role_lbl)}</span>
     <span class="muted" style="font-size:.75rem;font-weight:400;margin-left:auto">{t['items']} items · {t['total_qty']} uds</span>
   </h3>
   {kit_table}
   <div style="margin-top:10px">
-    <button class="btn btn-primary btn-sm" onclick="openAddKit({tid},{json.dumps(t['display_name'])})">+ Añadir al kit</button>
+    <button class="btn btn-primary btn-sm" onclick="openAddKit({tid},'{dname_safe}')">+ Añadir al kit</button>
   </div>
 </div>"""
 
@@ -2196,6 +2351,195 @@ body{{display:block;background:#f0f4f8}}
 </div>
 </body></html>"""
 
+# ── calendar ─────────────────────────────────────────────────────────────────
+def _calendar_page(user, year, month):
+    today = _date.today()
+    # clamp month
+    if month < 1: year -= 1; month = 12
+    if month > 12: year += 1; month = 1
+    first = _date(year, month, 1)
+    _, days_in_month = _cal.monthrange(year, month)
+    last = _date(year, month, days_in_month)
+
+    # prev/next
+    prev_y, prev_m = (year, month-1) if month > 1 else (year-1, 12)
+    next_y, next_m = (year, month+1) if month < 12 else (year+1, 1)
+
+    # load assignments: project_members with date ranges
+    raw_members = rs(q("""
+        SELECT pm.id, pm.project_id, pm.user_id, pm.start_date, pm.end_date,
+               u.display_name uname, p.name pname, p.status pstatus
+        FROM project_members pm
+        JOIN users u ON u.id=pm.user_id
+        JOIN projects p ON p.id=pm.project_id
+        WHERE p.status NOT IN ('cancelled')
+    """))
+
+    # expand each member into days within this month
+    # day_map: day_str → list of {uid, uname, pid, pname}
+    day_map = {str(first + timedelta(days=i)): [] for i in range(days_in_month)}
+
+    for mb in raw_members:
+        s_str = mb['start_date'] or str(first)
+        e_str = mb['end_date'] or str(last)
+        try: s = _date.fromisoformat(s_str)
+        except: s = first
+        try: e = _date.fromisoformat(e_str)
+        except: e = last
+        s = max(s, first)
+        e = min(e, last)
+        if s > e: continue
+        cur = s
+        while cur <= e:
+            k = str(cur)
+            if k in day_map:
+                day_map[k].append({"uid": mb['user_id'], "uname": mb['uname'],
+                                   "pid": mb['project_id'], "pname": mb['pname']})
+            cur += timedelta(days=1)
+
+    # ── all active users ──
+    all_users = rs(q("SELECT id,display_name FROM users WHERE active=1 AND role!='backoffice' ORDER BY display_name"))
+    user_opts = "".join(f'<option value="{u["id"]}">{_esc(u["display_name"])}</option>' for u in all_users)
+
+    # ── active projects ──
+    all_projs = rs(q("SELECT id,name FROM projects WHERE status IN ('active','paused') ORDER BY name"))
+    proj_opts = "".join(f'<option value="{p["id"]}">{_esc(p["name"])}</option>' for p in all_projs)
+
+    # ── calendar grid ──
+    dow_labels = "".join(f'<div class="cal-dow">{d}</div>' for d in ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"])
+
+    # pad start
+    first_dow = first.weekday()  # 0=Mon
+    cells = ['<div class="cal-day other-month"></div>'] * first_dow
+
+    for i in range(days_in_month):
+        day = first + timedelta(days=i)
+        day_str = str(day)
+        is_today = (day == today)
+        today_cls = " today" if is_today else ""
+        chips = ""
+        seen = set()
+        for ent in day_map[day_str]:
+            k = (ent['uid'], ent['pid'])
+            if k in seen: continue
+            seen.add(k)
+            col = _pcolor(ent['pid'])
+            initials = "".join(w[0].upper() for w in ent['uname'].split()[:2])
+            chips += (f'<span class="cal-chip" style="background:{col}" '
+                      f'title="{_esc(ent["uname"])} → {_esc(ent["pname"])}">'
+                      f'{_esc(initials)} {_esc(ent["pname"][:12])}</span>')
+        cells.append(f'<div class="cal-day{today_cls}"><div class="cal-day-num">{day.day}</div>{chips}</div>')
+
+    # pad end to complete the last week
+    while len(cells) % 7 != 0:
+        cells.append('<div class="cal-day other-month"></div>')
+
+    grid_html = dow_labels + "".join(cells)
+
+    # ── matrix view: technicians × days ──
+    # rows = technicians, cols = each day of month
+    # Only show technicians with at least one assignment this month
+    tech_ids = sorted({ent['uid'] for dl in day_map.values() for ent in dl})
+    tech_names = {mb['user_id']: mb['uname'] for mb in raw_members}
+    for u in all_users:
+        tech_names[u['id']] = u['display_name']
+
+    matrix_html = ""
+    if tech_ids:
+        day_headers = "".join(
+            f'<th class={"today-col" if str(first+timedelta(days=i))==str(today) else ""}>{(first+timedelta(days=i)).day}</th>'
+            for i in range(days_in_month))
+        matrix_html = f'<div class="matrix-wrap"><table class="matrix"><thead><tr><th class="tech-col">Técnico</th>{day_headers}</tr></thead><tbody>'
+        for uid in tech_ids:
+            uname = tech_names.get(uid, str(uid))
+            initials = "".join(w[0].upper() for w in uname.split()[:2])
+            col = _pcolor(uid)
+            row = f'<td><div class="avatar avatar-sm" style="background:{col};margin:auto">{_esc(initials)}</div> <span style="font-size:.75rem">{_esc(uname)}</span></td>'
+            for i in range(days_in_month):
+                day_str = str(first + timedelta(days=i))
+                is_tc = (first + timedelta(days=i) == today)
+                entries = [e for e in day_map[day_str] if e['uid'] == uid]
+                if entries:
+                    e0 = entries[0]
+                    col_p = _pcolor(e0['pid'])
+                    cell = f'<span class="matrix-cell" style="background:{col_p}" title="{_esc(e0["pname"])}">{_esc(e0["pname"][:6])}</span>'
+                else:
+                    cell = ""
+                td_cls = ' class="today-col"' if is_tc else ""
+                row += f'<td{td_cls}>{cell}</td>'
+            matrix_html += f'<tr>{row}</tr>'
+        matrix_html += '</tbody></table></div>'
+    else:
+        matrix_html = '<p class="muted" style="text-align:center;padding:24px">Sin asignaciones este mes</p>'
+
+    month_names = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
+                   "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+    month_label = f"{month_names[month-1]} {year}"
+
+    content = f"""
+<div class="toolbar">
+  <h1>🗓 Calendario de personal</h1>
+  <button class="btn btn-primary" onclick="document.getElementById('assign-modal').classList.add('open')">+ Asignación</button>
+</div>
+
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+  <div style="display:flex;align-items:center;gap:10px">
+    <a href="{BP}/calendar?year={prev_y}&month={prev_m}" class="btn btn-ghost btn-sm">← {month_names[prev_m-1]}</a>
+    <h2 style="margin:0;min-width:160px;text-align:center">{month_label}</h2>
+    <a href="{BP}/calendar?year={next_y}&month={next_m}" class="btn btn-ghost btn-sm">{month_names[next_m-1]} →</a>
+  </div>
+  <a href="{BP}/calendar?year={today.year}&month={today.month}" class="btn btn-ghost btn-sm">Hoy</a>
+</div>
+
+<div class="card" style="padding:16px">
+  <h2 style="margin-bottom:12px">Vista mensual</h2>
+  <div class="cal-grid">{grid_html}</div>
+</div>
+
+<div class="card" style="padding:16px">
+  <h2 style="margin-bottom:12px">Carga por técnico — {month_label}</h2>
+  {matrix_html}
+</div>
+
+<!-- MODAL nueva asignación -->
+<div class="modal-bg" id="assign-modal">
+<div class="modal" style="max-width:480px">
+  <h2>Nueva asignación de personal</h2>
+  <div class="form-row single">
+    <div><label>Técnico</label><select id="ca-user">{user_opts}</select></div>
+  </div>
+  <div class="form-row single">
+    <div><label>Proyecto</label><select id="ca-proj">{proj_opts}</select></div>
+  </div>
+  <div class="form-row">
+    <div><label>Fecha inicio</label><input type="date" id="ca-start" value="{first}"></div>
+    <div><label>Fecha fin</label><input type="date" id="ca-end" value="{last}"></div>
+  </div>
+  <div class="form-row single">
+    <div><label>Notas</label><input id="ca-notes" placeholder="Turno, rol específico..."></div>
+  </div>
+  <div class="modal-foot">
+    <button type="button" class="btn btn-ghost" onclick="document.getElementById('assign-modal').classList.remove('open')">Cancelar</button>
+    <button class="btn btn-primary" onclick="doCreateAssign()">Guardar</button>
+  </div>
+</div></div>
+
+<script>
+var bp={json.dumps(BP)};
+document.getElementById('assign-modal').onclick=function(e){{if(e.target===this)this.classList.remove('open');}};
+function doCreateAssign(){{
+  var pid=document.getElementById('ca-proj').value;
+  var d={{user_id:document.getElementById('ca-user').value,
+    start_date:document.getElementById('ca-start').value,
+    end_date:document.getElementById('ca-end').value,
+    notes:document.getElementById('ca-notes').value}};
+  fetch(bp+'/api/projects/'+pid+'/members',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+}}
+</script>"""
+    return _shell("calendar", user, content)
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 def _body(h) -> dict:
     n = int(h.headers.get("Content-Length", 0))
@@ -2266,6 +2610,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, _inventory_page(sess)); return
         if rel == "/kit":
             self._send(200, _kit_page(sess)); return
+        if rel == "/calendar":
+            yr = int(qs.get("year",[_date.today().year])[0])
+            mo = int(qs.get("month",[_date.today().month])[0])
+            self._send(200, _calendar_page(sess, yr, mo)); return
         if rel == "/users":
             if sess.get("role") != "admin": self._redirect(f"{BP}/"); return
             self._send(200, _users_page(sess)); return
@@ -2282,6 +2630,11 @@ class Handler(BaseHTTPRequestHandler):
                                  (int(m.group(1)),)))); return
         if rel == "/api/materials":
             self._json(200, rs(q("SELECT * FROM materials ORDER BY name"))); return
+        m = re.match(r"^/api/projects/(\d+)/members$", rel)
+        if m:
+            self._json(200, rs(q("""SELECT pm.*,u.display_name uname FROM project_members pm
+                JOIN users u ON u.id=pm.user_id WHERE pm.project_id=?
+                ORDER BY pm.start_date""", (int(m.group(1)),)))); return
         if rel == "/api/kit":
             if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
             self._json(200, rs(q("SELECT k.*,m.name mat_name,m.code mat_code FROM tech_kit k JOIN materials m ON m.id=k.material_id"))); return
@@ -2383,6 +2736,22 @@ class Handler(BaseHTTPRequestHandler):
             cid = run("INSERT INTO task_checklist (task_id,label,done,pos) VALUES(?,?,0,?)",
                       (tid, label, (max_pos[0] if max_pos else 0)+1))
             self._json(201, {"id":cid}); return
+
+        # project members
+        m = re.match(r"^/api/projects/(\d+)/members$", rel)
+        if m:
+            pid = int(m.group(1))
+            uid = int(data.get("user_id") or 0)
+            if not uid: self._json(400, {"error":"Usuario requerido"}); return
+            try:
+                mid = run("""INSERT OR REPLACE INTO project_members
+                    (project_id,user_id,start_date,end_date,notes)
+                    VALUES(?,?,?,?,?)""",
+                    (pid, uid, data.get("start_date",""), data.get("end_date",""),
+                     data.get("notes","")))
+                self._json(201, {"id":mid}); return
+            except Exception as ex:
+                self._json(400, {"error":str(ex)}); return
 
         # project log
         m = re.match(r"^/api/projects/(\d+)/log$", rel)
@@ -2604,6 +2973,11 @@ class Handler(BaseHTTPRequestHandler):
             if q1("SELECT id FROM tech_kit WHERE material_id=? AND qty>0 LIMIT 1", (mid,)):
                 self._json(400, {"error":"Material en kit de técnicos"}); return
             run("DELETE FROM materials WHERE id=?", (mid,))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/project_members/(\d+)$", rel)
+        if m:
+            run("DELETE FROM project_members WHERE id=?", (int(m.group(1)),))
             self._json(200, {"ok":True}); return
 
         m = re.match(r"^/api/users/(\d+)$", rel)
