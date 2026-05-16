@@ -296,6 +296,10 @@ def _esc(s) -> str:
     if s is None: return ""
     return str(s).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"',"&quot;")
 
+def _jattr(obj) -> str:
+    """JSON-encode obj safe for use inside an HTML double-quoted attribute."""
+    return json.dumps(obj).replace('"', '&quot;')
+
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -1465,7 +1469,7 @@ def _projects_page(user, filter_status="", view="cards"):
             f'<div class="proj-card-foot">'
             f'<span>{due_html}</span>'
             f'<span style="display:flex;align-items:center;gap:6px">{members_html}{tech_html}</span>'
-            f'<button onclick="event.preventDefault();event.stopPropagation();editProject({json.dumps(safe_p)})" '
+            f'<button onclick="event.preventDefault();event.stopPropagation();editProject({_jattr(safe_p)})" '
             f'class="btn btn-ghost btn-icon">✏️</button>'
             f'</div></a>')
 
@@ -1484,7 +1488,7 @@ def _projects_page(user, filter_status="", view="cards"):
             f'<td class="muted col-m-hide">{_esc(p["tech"] or "—")}</td>'
             f'<td class="muted col-m-hide">{_esc((p["due_date"] or "—")[:10])}</td>'
             f'<td class="col-m-hide">{prog}</td>'
-            f'<td><button class="btn btn-ghost btn-icon" onclick="editProject({json.dumps(safe_p2)})">✏️</button>'
+            f'<td><button class="btn btn-ghost btn-icon" onclick="editProject({_jattr(safe_p2)})">✏️</button>'
             f'<a href="{BP}/projects/{p["id"]}" class="btn btn-ghost btn-icon">→</a></td></tr>')
 
     empty = "<p class='muted' style='text-align:center;padding:32px;grid-column:1/-1'>Sin proyectos todavía</p>"
@@ -2153,7 +2157,7 @@ def _project_detail(user, pid):
   </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap">
     <a href="{BP}/projects/{pid}/report" target="_blank" class="btn btn-ghost btn-sm">🖨 Informe</a>
-    <button class="btn btn-ghost btn-sm" onclick="editProject({json.dumps(safe_proj)})">✏️ Editar</button>
+    <button class="btn btn-ghost btn-sm" onclick="editProject({_jattr(safe_proj)})">✏️ Editar</button>
   </div>
 </div>
 {desc_html}
