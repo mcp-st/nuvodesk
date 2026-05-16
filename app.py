@@ -1346,10 +1346,6 @@ def _dashboard(user):
         LEFT JOIN users u ON u.id=p.assigned_to
         ORDER BY p.updated_at DESC LIMIT 8"""))
 
-    kit_empty = rs(q("""SELECT u.display_name,COUNT(k.id) items
-        FROM users u LEFT JOIN tech_kit k ON k.user_id=u.id AND k.qty>0
-        WHERE u.active=1 AND u.role IN ('technician','admin')
-        GROUP BY u.id HAVING items=0"""))
 
     kpis = f"""<div class="card-grid">
   <div class="kpi"><div class="val">{ps.get('t',0)}</div><div class="lbl">Proyectos</div></div>
@@ -1386,10 +1382,6 @@ def _dashboard(user):
     <th>Vencimiento</th><th>Estado</th></tr></thead><tbody>{rows}</tbody></table></div>
 </div>"""
 
-    kit_html = ""
-    if kit_empty:
-        names = ", ".join(_esc(k['display_name']) for k in kit_empty)
-        kit_html = f'<div class="alert alert-amber">🎒 Técnicos sin kit configurado: {names}</div>'
 
     rp_rows = "".join(f"<tr>"
         f"<td><a href='{BP}/projects/{p['id']}' class='fw7'>{_esc(p['name'])}</a>"
@@ -1406,7 +1398,7 @@ def _dashboard(user):
     <th class="col-m-hide">Límite</th></tr></thead><tbody>{rp_rows}</tbody></table></div>
 </div>"""
 
-    content = f"<h1>Dashboard</h1>{kit_html}{kpis}{low_html}{od_html}{rp_html}"
+    content = f"<h1>Dashboard</h1>{kpis}{low_html}{od_html}{rp_html}"
     return _shell("dashboard", user, content)
 
 # ── projects list ─────────────────────────────────────────────────────────────
