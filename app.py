@@ -248,6 +248,18 @@ CREATE TABLE IF NOT EXISTS equipment_items (
     added_by      INTEGER REFERENCES users(id),
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS project_kit (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    added_by    INTEGER REFERENCES users(id),
+    category    TEXT NOT NULL DEFAULT 'other',
+    item_name   TEXT NOT NULL,
+    quantity    TEXT NOT NULL DEFAULT '1',
+    unit        TEXT NOT NULL DEFAULT 'uds',
+    notes       TEXT DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'pending',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 MIGRATIONS = [
@@ -839,6 +851,34 @@ textarea{resize:vertical;min-height:75px}
 }
 .mv-in{color:var(--green);font-weight:700}
 .mv-out{color:var(--red);font-weight:700}
+/* ── kit recommendations ── */
+.rec-cat{{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:999px;
+  font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap}}
+.rc-sfp10g{{background:rgba(99,102,241,.13);color:#4f46e5}}
+.rc-sfp1g{{background:rgba(59,130,246,.13);color:#2563eb}}
+.rc-glc{{background:rgba(16,185,129,.13);color:#059669}}
+.rc-fiber{{background:rgba(245,158,11,.13);color:#d97706}}
+.rc-patchrj45{{background:rgba(236,72,153,.13);color:#db2777}}
+.rc-cisco{{background:rgba(239,68,68,.13);color:#dc2626}}
+.rc-stack{{background:rgba(168,85,247,.13);color:#9333ea}}
+.rc-poe{{background:rgba(20,184,166,.13);color:#0d9488}}
+.rc-other{{background:rgba(107,114,128,.13);color:#4b5563}}
+.rec-status-pending{{color:var(--amber);font-weight:700;font-size:.75rem}}
+.rec-status-brought{{color:var(--green);font-weight:700;font-size:.75rem}}
+.rec-status-not_needed{{color:var(--muted);font-size:.75rem;text-decoration:line-through}}
+.rec-proj-card{{background:var(--bg2);border:1.5px solid var(--border);border-radius:var(--radius);
+  padding:20px;box-shadow:var(--shadow);margin-bottom:18px}}
+.rec-proj-card h3{{font-size:.95rem;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px}}
+.rec-proj-card h3 .proj-badge{{font-size:.68rem;padding:2px 8px;border-radius:999px;
+  background:var(--primary-light);color:var(--primary);font-weight:700}}
+.rec-item{{display:flex;align-items:flex-start;gap:10px;padding:9px 0;
+  border-bottom:1px solid var(--border);transition:background .15s}}
+.rec-item:last-child{{border-bottom:none}}
+.rec-item .ri-main{{flex:1;min-width:0}}
+.rec-item .ri-name{{font-weight:600;font-size:.88rem;margin-bottom:2px}}
+.rec-item .ri-meta{{font-size:.75rem;color:var(--muted)}}
+.rec-item .ri-qty{{font-size:1.1rem;font-weight:800;color:var(--text);margin-right:2px}}
+.rec-item .ri-actions{{display:flex;gap:5px;align-items:center;flex-shrink:0}}
 
 /* ── progress bar ── */
 .progress{background:var(--border);border-radius:999px;height:7px;overflow:hidden}
@@ -1076,7 +1116,7 @@ def _shell(page, user, content, extra_head=""):
         ("workload",  f"{bp}/workload",   "📊", "Cargas"),
         ("calendar",  f"{bp}/calendar",   "🗓", "Calendario"),
         ("inventory", f"{bp}/inventory",  "📦", "Inventario"),
-        ("kit",       f"{bp}/kit",        "🎒", "Kit campo"),
+        ("kit",       f"{bp}/kit",        "📦", "Material rec."),
         ("users",     f"{bp}/users",      "👥", "Usuarios"),
         ("download",  f"{bp}/download",   "📲", "App móvil"),
     ]
@@ -1207,10 +1247,10 @@ body{{
 }}
 .login-wrap{{display:flex;width:min(900px,98vw);min-height:520px;border-radius:24px;overflow:hidden;box-shadow:var(--shadow-lg);border:1px solid var(--border)}}
 .login-brand{{
-  flex:1;background:var(--grad);
+  flex:1;background:linear-gradient(150deg,#1e1b4b 0%,#3730a3 60%,#4f46e5 100%);
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   padding:48px;text-align:center;color:#fff;
-  background-image:radial-gradient(circle at 30% 30%,rgba(255,255,255,.15) 0%,transparent 60%)
+  background-image:radial-gradient(circle at 70% 10%,rgba(255,255,255,.08) 0%,transparent 50%)
 }}
 .login-brand .brand-mark{{
   width:72px;height:72px;background:rgba(255,255,255,.2);border-radius:20px;
@@ -1219,9 +1259,9 @@ body{{
   border:1.5px solid rgba(255,255,255,.3);box-shadow:0 8px 32px rgba(0,0,0,.15)
 }}
 .login-brand h2{{font-size:1.9rem;font-weight:800;letter-spacing:-.4px;margin-bottom:8px}}
-.login-brand p{{opacity:.8;font-size:.95rem;line-height:1.6;max-width:240px}}
+.login-brand p{{opacity:.92;font-size:.95rem;line-height:1.6;max-width:240px}}
 .login-brand .features{{margin-top:32px;text-align:left;width:100%;max-width:260px}}
-.login-brand .feat{{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:.87rem;opacity:.85}}
+.login-brand .feat{{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:.87rem;opacity:.9}}
 .login-brand .feat-dot{{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.6);flex-shrink:0}}
 .login-form-side{{
   width:min(380px,100%);background:#fff;
@@ -1735,6 +1775,10 @@ def _project_detail(user, pid):
         FROM equipment_items ei LEFT JOIN users u ON u.id=ei.added_by
         WHERE ei.project_id=? ORDER BY ei.created_at DESC""", (pid,)))
 
+    kit_recs = rs(q("""SELECT pk.*,u.display_name uname
+        FROM project_kit pk LEFT JOIN users u ON u.id=pk.added_by
+        WHERE pk.project_id=? ORDER BY pk.created_at DESC""", (pid,)))
+
     mats = rs(q("SELECT id,code,name,unit,stock_warehouse FROM materials ORDER BY name"))
     mat_opts = "".join(
         f'<option value="{m["id"]}" data-stock="{m["stock_warehouse"]}">'
@@ -2021,6 +2065,62 @@ def _project_detail(user, pid):
     else:
         timer_banner_html = ""
 
+    # ── kit recommendations tab ──
+    _KIT_CATS = {
+        "sfp_10g":("SFP 10G","rc-sfp10g"), "sfp_1g":("SFP 1G","rc-sfp1g"),
+        "glc":("GLC/SFP","rc-glc"), "fiber_patch":("Fibra óptica","rc-fiber"),
+        "patchcord_rj45":("Patch RJ45","rc-patchrj45"), "cisco_cable":("Cable Cisco","rc-cisco"),
+        "stack_cable":("Cable STACK","rc-stack"), "poe_injector":("Inyector POE","rc-poe"),
+        "other":("Otro","rc-other"),
+    }
+    _KIT_ST = {
+        "pending":("⏳ Pendiente","rec-status-pending"),
+        "brought":("✅ Llevado","rec-status-brought"),
+        "not_needed":("— No necesario","rec-status-not_needed"),
+    }
+    kit_rows_html = ""
+    for kr in kit_recs:
+        cat_lbl, cat_cls = _KIT_CATS.get(kr.get("category","other"), ("Otro","rc-other"))
+        st_lbl, st_cls = _KIT_ST.get(kr.get("status","pending"), ("⏳ Pendiente","rec-status-pending"))
+        added_by_txt = f'por {_esc(kr.get("uname") or "?")}' if kr.get("uname") else ""
+        notes_txt = f' · {_esc(kr["notes"])}' if kr.get("notes") else ""
+        qty_unit = f'{_esc(str(kr["quantity"]))} {_esc(kr["unit"])}'
+        krid = kr["id"]
+        status_val = kr.get("status","pending")
+        toggle_btn = ""
+        if status_val == "pending":
+            toggle_btn = (f'<button class="btn btn-ghost btn-icon" title="Marcar como llevado" '
+                f'onclick="kitSetStatus({krid},\'brought\')">✅</button>'
+                f'<button class="btn btn-ghost btn-icon" title="No necesario" '
+                f'onclick="kitSetStatus({krid},\'not_needed\')">✗</button>')
+        elif status_val in ("brought","not_needed"):
+            toggle_btn = (f'<button class="btn btn-ghost btn-icon" title="Volver a pendiente" '
+                f'onclick="kitSetStatus({krid},\'pending\')">↩</button>')
+        kit_rows_html += (
+            f'<div class="rec-item">'
+            f'<div style="padding-top:3px"><span class="rec-cat {cat_cls}">{cat_lbl}</span></div>'
+            f'<div class="ri-main">'
+            f'<div class="ri-name">{_esc(kr["item_name"])}</div>'
+            f'<div class="ri-meta">{qty_unit}{notes_txt} {added_by_txt}</div>'
+            f'</div>'
+            f'<div class="ri-actions">'
+            f'<span class="{st_cls}">{st_lbl}</span>'
+            f'{toggle_btn}'
+            f'<button class="btn btn-danger btn-icon" onclick="delKitRec({krid})">✕</button>'
+            f'</div></div>')
+    kit_tab_html = f"""
+<div class="toolbar" style="margin-bottom:12px">
+  <h2>📦 Recomendaciones de material</h2>
+  <button class="btn btn-primary btn-sm" onclick="openKitRecModal()">+ Añadir</button>
+</div>
+<p class="muted" style="font-size:.82rem;margin-bottom:16px;line-height:1.5">
+  Recomendaciones del jefe de proyecto — materiales que el equipo de campo debería llevar.
+  No generan movimiento de almacén, son avisos de preparación.
+</p>
+<div class="card">
+{kit_rows_html if kit_rows_html else "<p class='muted' style='text-align:center;padding:24px'>Sin recomendaciones todavía — añade la primera.</p>"}
+</div>"""
+
     safe_proj = {k: v for k, v in p.items() if isinstance(v, (str, int, float, type(None)))}
     content = f"""
 <div style="margin-bottom:8px"><a href="{BP}/projects" class="muted" style="font-size:.85rem">← Proyectos</a></div>
@@ -2053,6 +2153,7 @@ def _project_detail(user, pid):
   <button class="tab-btn" onclick="showTab('diario',this)">Diario ({len(logs)})</button>
   <button class="tab-btn" onclick="showTab('equipo',this)">👥 Equipo ({len(members)})</button>
   <button class="tab-btn" onclick="showTab('archivos',this)">📁 Archivos ({len(pfiles)})</button>
+  <button class="tab-btn" onclick="showTab('kit',this)">📦 Material ({len(kit_recs)})</button>
   <button class="tab-btn" onclick="showTab('info',this)">Info</button>
 </div>
 
@@ -2149,12 +2250,53 @@ def _project_detail(user, pid):
 {extras_tab_html}
 </div>
 
+<!-- TAB KIT MATERIAL -->
+<div id="tab-kit" class="tab-pane">
+{kit_tab_html}
+</div>
+
 <!-- TAB INFO -->
 <div id="tab-info" class="tab-pane">
 <div class="card">
   <table><tbody>{info_rows or "<tr><td class='muted'>Sin datos adicionales</td></tr>"}</tbody></table>
 </div>
 </div>
+
+<!-- MODAL kit recomendación -->
+<div class="modal-bg" id="kit-rec-modal">
+<div class="modal" style="max-width:460px">
+  <h2>📦 Añadir recomendación de material</h2>
+  <div class="form-row single">
+    <div><label>Categoría</label>
+    <select id="kr-cat">
+      <option value="sfp_10g">SFP 10G</option>
+      <option value="sfp_1g">SFP 1G</option>
+      <option value="glc">GLC / SFP estándar</option>
+      <option value="fiber_patch">Patchcord fibra óptica</option>
+      <option value="patchcord_rj45">Patchcord RJ45</option>
+      <option value="cisco_cable">Cable especial Cisco</option>
+      <option value="stack_cable">Cable STACK</option>
+      <option value="poe_injector">Inyector POE</option>
+      <option value="other">Otro</option>
+    </select></div>
+  </div>
+  <div class="form-row single">
+    <div><label>Descripción / modelo</label>
+    <input id="kr-name" placeholder="Ej: SFP-10G-SR, GLC-SX-MMD, cable consola Cisco..."></div>
+  </div>
+  <div class="form-row">
+    <div><label>Cantidad</label><input type="text" id="kr-qty" value="1" style="width:80px"></div>
+    <div><label>Unidad</label><input id="kr-unit" value="uds" style="width:80px"></div>
+  </div>
+  <div class="form-row single">
+    <div><label>Notas (opcional)</label>
+    <input id="kr-notes" placeholder="Contexto, motivo, alternativas..."></div>
+  </div>
+  <div class="modal-foot">
+    <button type="button" class="btn btn-ghost" onclick="closeKitRecModal()">Cancelar</button>
+    <button class="btn btn-primary" onclick="doAddKitRec()">Añadir recomendación</button>
+  </div>
+</div></div>
 
 <!-- MODAL añadir miembro -->
 <div class="modal-bg" id="member-modal">
@@ -2700,6 +2842,42 @@ function delComment(id){{
   fetch(bp+'/api/wo_comments/'+id,{{method:'DELETE'}})
     .then(function(r){{if(r.ok)location.reload();}});
 }}
+
+// ── kit recommendations ──
+function openKitRecModal(){{
+  document.getElementById('kr-name').value='';
+  document.getElementById('kr-qty').value='1';
+  document.getElementById('kr-unit').value='uds';
+  document.getElementById('kr-notes').value='';
+  document.getElementById('kit-rec-modal').classList.add('open');
+}}
+function closeKitRecModal(){{document.getElementById('kit-rec-modal').classList.remove('open');}}
+document.getElementById('kit-rec-modal').onclick=function(e){{if(e.target===this)closeKitRecModal();}};
+function doAddKitRec(){{
+  var name=document.getElementById('kr-name').value.trim();
+  if(!name){{alert('Escribe una descripción');return;}}
+  fetch(bp+'/api/projects/'+pid+'/kit',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{
+      category:document.getElementById('kr-cat').value,
+      item_name:name,
+      quantity:document.getElementById('kr-qty').value||'1',
+      unit:document.getElementById('kr-unit').value||'uds',
+      notes:document.getElementById('kr-notes').value
+    }})}})
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+}}
+function kitSetStatus(id,status){{
+  fetch(bp+'/api/project_kit/'+id,{{method:'PATCH',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{status:status}})}})
+    .then(function(r){{if(r.ok)location.reload();}});
+}}
+function delKitRec(id){{
+  if(!confirm('¿Eliminar esta recomendación?')) return;
+  fetch(bp+'/api/project_kit/'+id,{{method:'DELETE'}})
+    .then(function(r){{if(r.ok)location.reload();}});
+}}
 </script>"""
     return _shell("projects", user, content)
 
@@ -2882,146 +3060,135 @@ function doAdjust(){{
 
 # ── kit de técnico ────────────────────────────────────────────────────────────
 def _kit_page(user):
-    techs = rs(q("""SELECT u.id,u.display_name,u.role,
-        COUNT(k.id) items, COALESCE(SUM(k.qty),0) total_qty
-        FROM users u LEFT JOIN tech_kit k ON k.user_id=u.id AND k.qty>0
-        WHERE u.active=1
-        GROUP BY u.id ORDER BY u.display_name"""))
-    mats = rs(q("SELECT id,code,name,unit,stock_warehouse FROM materials ORDER BY category,name"))
-    mat_opts = "".join(
-        f'<option value="{m["id"]}" data-stock="{m["stock_warehouse"]}" data-unit="{_esc(m["unit"])}">'
-        f'[{_esc(m["code"])}] {_esc(m["name"])}</option>' for m in mats)
-    user_opts = "".join(
-        f'<option value="{t["id"]}">{_esc(t["display_name"])}</option>' for t in techs)
+    _KIT_CATS = {
+        "sfp_10g":("SFP 10G","rc-sfp10g"), "sfp_1g":("SFP 1G","rc-sfp1g"),
+        "glc":("GLC/SFP","rc-glc"), "fiber_patch":("Fibra óptica","rc-fiber"),
+        "patchcord_rj45":("Patch RJ45","rc-patchrj45"), "cisco_cable":("Cable Cisco","rc-cisco"),
+        "stack_cable":("Cable STACK","rc-stack"), "poe_injector":("Inyector POE","rc-poe"),
+        "other":("Otro","rc-other"),
+    }
+    _KIT_ST = {
+        "pending":("⏳ Pendiente","rec-status-pending"),
+        "brought":("✅ Llevado","rec-status-brought"),
+        "not_needed":("— No necesario","rec-status-not_needed"),
+    }
 
-    cards = ""
-    for t in techs:
-        kit_items = rs(q("""SELECT k.*,m.name mat_name,m.code mat_code,m.unit mat_unit
-            FROM tech_kit k JOIN materials m ON m.id=k.material_id
-            WHERE k.user_id=? AND k.qty>0 ORDER BY m.category,m.name""", (t['id'],)))
-        role_lbl = {"admin":"Admin","technician":"Técnico","backoffice":"Backoffice"}.get(t['role'],t['role'])
+    # Projects that have kit recommendations (active/paused first)
+    projects_with_kit = rs(q("""
+        SELECT p.id,p.name,p.client,p.status,
+            COUNT(pk.id) total_items,
+            SUM(CASE WHEN pk.status='pending' THEN 1 ELSE 0 END) pending_items
+        FROM projects p JOIN project_kit pk ON pk.project_id=p.id
+        GROUP BY p.id
+        ORDER BY CASE p.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,
+                 SUM(CASE WHEN pk.status='pending' THEN 1 ELSE 0 END) DESC"""))
 
-        item_rows = ""
-        for ki in kit_items:
-            mname_safe = _esc(ki["mat_name"]).replace("'", "&#39;")
-            item_rows += (f'<tr><td><span class="chip">{_esc(ki["mat_code"])}</span></td>'
-                f'<td>{_esc(ki["mat_name"])}</td>'
-                f'<td style="text-align:center;font-weight:700">{ki["qty"]}</td>'
-                f'<td class="muted">{_esc(ki["mat_unit"])}</td>'
-                f'<td class="muted" style="font-size:.75rem">{_esc(ki["notes"] or "")}</td>'
-                f'<td><button class="btn btn-danger btn-icon" '
-                f"onclick=\"returnFromKit({ki['id']},{ki['qty']},'{mname_safe}',{t['id']})\">↩</button></td></tr>")
+    # KPI counts
+    total_recs = q1("SELECT COUNT(*) FROM project_kit")[0]
+    pending_recs = q1("SELECT COUNT(*) FROM project_kit WHERE status='pending'")[0]
+    brought_recs = q1("SELECT COUNT(*) FROM project_kit WHERE status='brought'")[0]
 
-        empty_msg = '<p class="muted" style="padding:12px 0;font-size:.85rem">Kit vacío</p>'
-        kit_table = (f'<div class="tbl-wrap"><table><thead><tr><th>Cód</th><th>Material</th>'
-            f'<th style="text-align:center">Qty</th><th>Ud</th><th>Notas</th><th></th></tr></thead>'
-            f'<tbody>{item_rows}</tbody></table></div>') if kit_items else empty_msg
+    # Build project cards
+    proj_cards_html = ""
+    for proj in projects_with_kit:
+        recs = rs(q("""SELECT pk.*,u.display_name uname
+            FROM project_kit pk LEFT JOIN users u ON u.id=pk.added_by
+            WHERE pk.project_id=? ORDER BY pk.status='pending' DESC, pk.created_at DESC""", (proj['id'],)))
 
-        tid = t['id']
-        dname_safe = _esc(t['display_name']).replace("'", "&#39;")
-        cards += f"""<div class="kit-card">
-  <h3>👤 {_esc(t['display_name'])} <span class="role-badge">{_esc(role_lbl)}</span>
-    <span class="muted" style="font-size:.75rem;font-weight:400;margin-left:auto">{t['items']} items · {t['total_qty']} uds</span>
+        items_html = ""
+        for kr in recs:
+            cat_lbl, cat_cls = _KIT_CATS.get(kr.get("category","other"), ("Otro","rc-other"))
+            st_lbl, st_cls = _KIT_ST.get(kr.get("status","pending"), ("⏳ Pendiente","rec-status-pending"))
+            notes_txt = f' · {_esc(kr["notes"])}' if kr.get("notes") else ""
+            qty_unit = f'{_esc(str(kr["quantity"]))} {_esc(kr["unit"])}'
+            krid = kr["id"]
+            status_val = kr.get("status","pending")
+            if status_val == "pending":
+                actions = (f'<button class="btn btn-ghost btn-icon" title="Marcar como llevado" '
+                    f'onclick="kitSetStatus({krid},\'brought\')">✅</button>'
+                    f'<button class="btn btn-ghost btn-icon" title="No necesario" '
+                    f'onclick="kitSetStatus({krid},\'not_needed\')">✗</button>')
+            else:
+                actions = (f'<button class="btn btn-ghost btn-icon" title="Volver a pendiente" '
+                    f'onclick="kitSetStatus({krid},\'pending\')">↩</button>')
+            items_html += (
+                f'<div class="rec-item">'
+                f'<div style="padding-top:3px"><span class="rec-cat {cat_cls}">{cat_lbl}</span></div>'
+                f'<div class="ri-main">'
+                f'<div class="ri-name">{_esc(kr["item_name"])}</div>'
+                f'<div class="ri-meta">{qty_unit}{notes_txt}</div>'
+                f'</div>'
+                f'<div class="ri-actions">'
+                f'<span class="{st_cls}">{st_lbl}</span>'
+                f'{actions}'
+                f'<button class="btn btn-danger btn-icon" onclick="delKitRec({krid})">✕</button>'
+                f'</div></div>')
+
+        pending_badge = (f'<span style="background:rgba(245,158,11,.15);color:#d97706;'
+            f'padding:2px 8px;border-radius:999px;font-size:.7rem;font-weight:700">'
+            f'{proj["pending_items"]} pendiente{"s" if proj["pending_items"]!=1 else ""}</span>'
+            if proj["pending_items"] else
+            f'<span style="background:rgba(16,185,129,.12);color:#059669;'
+            f'padding:2px 8px;border-radius:999px;font-size:.7rem;font-weight:700">✓ Todo listo</span>')
+
+        proj_cards_html += f"""<div class="rec-proj-card">
+  <h3>
+    <a href="{BP}/projects/{proj['id']}" style="color:inherit;text-decoration:none">{_esc(proj['name'])}</a>
+    <span class="proj-badge">{_esc(proj['client'])}</span>
+    {pending_badge}
+    <span style="margin-left:auto;font-size:.72rem;color:var(--muted);font-weight:400">{proj['total_items']} items</span>
   </h3>
-  {kit_table}
-  <div style="margin-top:10px">
-    <button class="btn btn-primary btn-sm" onclick="openAddKit({tid},'{dname_safe}')">+ Añadir al kit</button>
-  </div>
+  {items_html}
+</div>"""
+
+    if not proj_cards_html:
+        proj_cards_html = """<div class="card" style="text-align:center;padding:40px">
+  <div style="font-size:2rem;margin-bottom:10px">📦</div>
+  <div style="font-weight:700;margin-bottom:6px">Sin recomendaciones todavía</div>
+  <p class="muted" style="font-size:.87rem">
+    Abre un proyecto activo, ve a la pestaña <strong>📦 Material</strong> y añade<br>
+    las recomendaciones de material para el equipo de campo.
+  </p>
 </div>"""
 
     content = f"""
 <div class="toolbar">
-  <h1>🎒 Kit de campo por técnico</h1>
+  <h1>📦 Recomendaciones de material</h1>
 </div>
-<div class="alert alert-amber" style="font-size:.85rem">
-  El kit de campo son los materiales que cada técnico lleva habitualmente:
-  SFP/GLC, latiguillos, inyectores POE, herramientas, conectores, etc.
-  Al añadir al kit se descuenta del stock de almacén.
-</div>
-<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px">
-{cards}
+<p class="muted" style="font-size:.87rem;margin-bottom:20px;line-height:1.6">
+  Vista global de todas las recomendaciones de material hechas por los jefes de proyecto.
+  El equipo de campo puede marcar cada ítem como <em>llevado</em> o <em>no necesario</em>.
+</p>
+
+<div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:24px">
+  <div class="kpi">
+    <div class="val">{total_recs}</div>
+    <div class="lbl">Total recomendaciones</div>
+  </div>
+  <div class="kpi a">
+    <div class="val">{pending_recs}</div>
+    <div class="lbl">Pendientes</div>
+  </div>
+  <div class="kpi g">
+    <div class="val">{brought_recs}</div>
+    <div class="lbl">Llevadas</div>
+  </div>
 </div>
 
-<!-- modal añadir al kit -->
-<div class="modal-bg" id="kit-modal">
-<div class="modal" style="max-width:420px">
-  <h2 id="kit-modal-title">Añadir al kit</h2>
-  <input type="hidden" id="kit-uid">
-  <div class="field"><label>Material</label>
-    <select id="kit-mat">{mat_opts}</select>
-    <span id="kit-stock-info" style="font-size:.75rem;color:var(--muted);margin-top:4px;display:block"></span>
-  </div>
-  <div class="form-row">
-    <div><label>Cantidad</label><input type="number" id="kit-qty" min="1" value="1"></div>
-    <div><label>Notas</label><input id="kit-notes" placeholder="Opcional"></div>
-  </div>
-  <div class="modal-foot">
-    <button type="button" class="btn btn-ghost" onclick="closeKitModal()">Cancelar</button>
-    <button class="btn btn-primary" onclick="doAddKit()">Añadir al kit</button>
-  </div>
-</div></div>
-
-<!-- modal devolver al almacén -->
-<div class="modal-bg" id="ret-modal">
-<div class="modal" style="max-width:380px">
-  <h2 id="ret-title">Devolver al almacén</h2>
-  <input type="hidden" id="ret-kid">
-  <input type="hidden" id="ret-uid">
-  <div class="field"><label>Cantidad a devolver</label>
-    <input type="number" id="ret-qty" min="1" value="1"></div>
-  <div class="modal-foot">
-    <button type="button" class="btn btn-ghost" onclick="closeRetModal()">Cancelar</button>
-    <button class="btn btn-amber" onclick="doReturn()">Devolver</button>
-  </div>
-</div></div>
+{proj_cards_html}
 
 <script>
 var bp={json.dumps(BP)};
-function openAddKit(uid,name){{
-  document.getElementById('kit-modal-title').textContent='Añadir kit: '+name;
-  document.getElementById('kit-uid').value=uid;
-  document.getElementById('kit-qty').value=1;
-  document.getElementById('kit-notes').value='';
-  updateKitStock();
-  document.getElementById('kit-modal').classList.add('open');
+function kitSetStatus(id,status){{
+  fetch(bp+'/api/project_kit/'+id,{{method:'PATCH',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{status:status}})}})
+    .then(function(r){{if(r.ok)location.reload();}});
 }}
-function closeKitModal(){{document.getElementById('kit-modal').classList.remove('open');}}
-document.getElementById('kit-modal').onclick=function(e){{if(e.target===this)closeKitModal();}};
-function updateKitStock(){{
-  var sel=document.getElementById('kit-mat');
-  var opt=sel.options[sel.selectedIndex];
-  var s=opt?opt.getAttribute('data-stock'):'?';
-  var u=opt?opt.getAttribute('data-unit'):'';
-  document.getElementById('kit-stock-info').textContent='Stock almacén disponible: '+s+' '+u;
-}}
-document.getElementById('kit-mat').onchange=updateKitStock;
-function doAddKit(){{
-  var uid=document.getElementById('kit-uid').value;
-  var mid=document.getElementById('kit-mat').value;
-  var qty=parseInt(document.getElementById('kit-qty').value)||0;
-  var notes=document.getElementById('kit-notes').value;
-  if(qty<1){{alert('Cantidad mínima: 1');return;}}
-  fetch(bp+'/api/kit',{{method:'POST',headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{user_id:uid,material_id:mid,qty:qty,notes:notes}})}})
-    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
-}}
-function returnFromKit(kid,maxQty,name,uid){{
-  document.getElementById('ret-title').textContent='Devolver: '+name;
-  document.getElementById('ret-kid').value=kid;
-  document.getElementById('ret-uid').value=uid;
-  document.getElementById('ret-qty').max=maxQty;
-  document.getElementById('ret-qty').value=maxQty;
-  document.getElementById('ret-modal').classList.add('open');
-}}
-function closeRetModal(){{document.getElementById('ret-modal').classList.remove('open');}}
-document.getElementById('ret-modal').onclick=function(e){{if(e.target===this)closeRetModal();}};
-function doReturn(){{
-  var kid=document.getElementById('ret-kid').value;
-  var qty=parseInt(document.getElementById('ret-qty').value)||0;
-  if(qty<1){{alert('Cantidad mínima: 1');return;}}
-  fetch(bp+'/api/kit/'+kid+'/return',{{method:'POST',headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{qty:qty}})}})
-    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+function delKitRec(id){{
+  if(!confirm('¿Eliminar esta recomendación?')) return;
+  fetch(bp+'/api/project_kit/'+id,{{method:'DELETE'}})
+    .then(function(r){{if(r.ok)location.reload();}});
 }}
 </script>"""
     return _shell("kit", user, content)
@@ -4181,6 +4348,21 @@ class Handler(BaseHTTPRequestHandler):
                  int(data.get("quantity") or 1), data.get("notes",""), sess["id"]))
             self._json(201, {"id":eid}); return
 
+        # kit recommendations
+        m = re.match(r"^/api/projects/(\d+)/kit$", rel)
+        if m:
+            pid = int(m.group(1))
+            item_name = (data.get("item_name","") or "").strip()
+            if not item_name: self._json(400, {"error":"Descripción requerida"}); return
+            kid = run("""INSERT INTO project_kit
+                (project_id,added_by,category,item_name,quantity,unit,notes,status)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                (pid, sess["id"],
+                 data.get("category","other"), item_name,
+                 str(data.get("quantity","1")), data.get("unit","uds"),
+                 data.get("notes",""), "pending"))
+            self._json(201, {"id":kid}); return
+
         # comments
         m = re.match(r"^/api/projects/(\d+)/comments$", rel)
         if m:
@@ -4423,6 +4605,15 @@ class Handler(BaseHTTPRequestHandler):
                  data.get("status","requested"),data.get("notes",""),aid))
             self._json(200, {"ok":True}); return
 
+        m = re.match(r"^/api/project_kit/(\d+)$", rel)
+        if m:
+            kid = int(m.group(1))
+            status = data.get("status","pending")
+            if status not in ("pending","brought","not_needed"):
+                self._json(400, {"error":"Estado inválido"}); return
+            run("UPDATE project_kit SET status=? WHERE id=?", (status, kid))
+            self._json(200, {"ok":True}); return
+
         m = re.match(r"^/api/users/(\d+)$", rel)
         if m:
             if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
@@ -4518,6 +4709,11 @@ class Handler(BaseHTTPRequestHandler):
             cm = r2d(q1("SELECT * FROM wo_comments WHERE id=?", (int(m.group(1)),)))
             if cm and (cm['user_id'] == sess['id'] or sess.get('role') == 'admin'):
                 run("DELETE FROM wo_comments WHERE id=?", (int(m.group(1)),))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/project_kit/(\d+)$", rel)
+        if m:
+            run("DELETE FROM project_kit WHERE id=?", (int(m.group(1)),))
             self._json(200, {"ok":True}); return
 
         self._json(404, {"error":"Not found"})
