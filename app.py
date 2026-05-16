@@ -855,6 +855,7 @@ def _shell(page, user, content, extra_head=""):
         ("inventory", f"{bp}/inventory",  "📦", "Inventario"),
         ("kit",       f"{bp}/kit",        "🎒", "Kit campo"),
         ("users",     f"{bp}/users",      "👥", "Usuarios"),
+        ("download",  f"{bp}/download",   "📲", "App móvil"),
     ]
     sidebar_links = ""
     bottom_links = ""
@@ -874,6 +875,10 @@ def _shell(page, user, content, extra_head=""):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="NuvoDesk">
+<meta name="theme-color" content="#1e40af">
+<link rel="manifest" href="{bp}/manifest.webmanifest">
 <title>NuvoDesk</title>
 <style>{_css()}</style>
 {extra_head}
@@ -3475,6 +3480,117 @@ def _workload_page(user, week_str=""):
 </p>"""
     return _shell("workload", user, content)
 
+# ── download page ─────────────────────────────────────────────────────────────
+def _download_page(user):
+    bp = BP
+    apk_size = ""
+    apk_path = os.path.join(os.path.dirname(__file__), "data/files/nuvodesk.apk")
+    if os.path.exists(apk_path):
+        apk_size = f" ({_fmt_size(os.path.getsize(apk_path))})"
+
+    content = f"""
+<div class="page-hd">
+  <h1>📲 Descargar App</h1>
+  <p class="muted">Instala NuvoDesk en tu dispositivo móvil</p>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;max-width:900px">
+
+  <!-- Android -->
+  <div class="card" style="border-top:4px solid #3ddc84">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <div style="font-size:2.5rem">🤖</div>
+      <div>
+        <div style="font-weight:700;font-size:1.15rem">Android</div>
+        <div class="muted" style="font-size:.82rem">Versión 1.0 · mínimo Android 7.0</div>
+      </div>
+    </div>
+    <p style="font-size:.88rem;color:var(--fg);margin-bottom:16px">
+      Aplicación nativa WebView que carga NuvoDesk directamente.
+      Las sesiones y cookies se mantienen entre aperturas.
+    </p>
+    <a href="{bp}/data/files/nuvodesk.apk" class="btn btn-primary"
+       style="display:inline-flex;gap:8px;text-decoration:none;margin-bottom:12px">
+      ⬇ Descargar APK{apk_size}
+    </a>
+    <div style="background:#f8fafc;border-radius:8px;padding:14px;font-size:.82rem;color:var(--muted)">
+      <strong style="color:var(--fg);display:block;margin-bottom:6px">📋 Instrucciones de instalación</strong>
+      <ol style="margin:0;padding-left:18px;line-height:1.8">
+        <li>Descarga el archivo APK</li>
+        <li>En Ajustes → Seguridad → activa <em>«Fuentes desconocidas»</em></li>
+        <li>Abre el APK descargado y pulsa Instalar</li>
+        <li>La app aparecerá en tu pantalla de inicio</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- iOS / PWA -->
+  <div class="card" style="border-top:4px solid #007aff">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <div style="font-size:2.5rem">🍎</div>
+      <div>
+        <div style="font-weight:700;font-size:1.15rem">iPhone / iPad</div>
+        <div class="muted" style="font-size:.82rem">PWA · iOS 16.4+ recomendado</div>
+      </div>
+    </div>
+    <p style="font-size:.88rem;color:var(--fg);margin-bottom:16px">
+      En iOS no se pueden distribuir APK. Usa la función
+      <strong>«Añadir a pantalla de inicio»</strong> de Safari para
+      instalarla como app nativa (PWA).
+    </p>
+    <div style="background:#f0f7ff;border-radius:8px;padding:14px;font-size:.82rem;color:var(--fg)">
+      <strong style="display:block;margin-bottom:8px">📋 Instalar en iPhone / iPad</strong>
+      <ol style="margin:0;padding-left:18px;line-height:2">
+        <li>Abre <strong>Safari</strong> y ve a <code>dev.nupro.es/nuvodesk</code></li>
+        <li>Pulsa el icono de compartir <strong>⬆</strong> (barra inferior)</li>
+        <li>Selecciona <strong>«Añadir a pantalla de inicio»</strong></li>
+        <li>Confirma el nombre y pulsa <strong>Añadir</strong></li>
+      </ol>
+      <div style="margin-top:10px;padding:8px;background:#fff3cd;border-radius:6px;font-size:.78rem">
+        ⚠️ Usa siempre Safari — otros navegadores no permiten instalar PWA en iOS
+      </div>
+    </div>
+  </div>
+
+  <!-- Android PWA -->
+  <div class="card" style="border-top:4px solid #4285f4">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <div style="font-size:2.5rem">🌐</div>
+      <div>
+        <div style="font-weight:700;font-size:1.15rem">PWA (todos los dispositivos)</div>
+        <div class="muted" style="font-size:.82rem">Sin instalación · siempre actualizado</div>
+      </div>
+    </div>
+    <p style="font-size:.88rem;color:var(--fg);margin-bottom:16px">
+      Usa NuvoDesk desde el navegador como si fuera una app.
+      Chrome en Android muestra automáticamente el banner de instalación.
+    </p>
+    <div style="background:#f8fafc;border-radius:8px;padding:14px;font-size:.82rem;color:var(--muted)">
+      <strong style="color:var(--fg);display:block;margin-bottom:6px">📋 Instalar en Android (Chrome)</strong>
+      <ol style="margin:0;padding-left:18px;line-height:1.8">
+        <li>Abre Chrome y visita NuvoDesk</li>
+        <li>Pulsa el menú <strong>⋮</strong> (tres puntos)</li>
+        <li>Selecciona <strong>«Añadir a pantalla de inicio»</strong></li>
+        <li>La app quedará instalada sin descargar nada</li>
+      </ol>
+    </div>
+  </div>
+
+</div>
+
+<div class="card" style="max-width:900px;margin-top:4px;background:#f0fff4;border:1px solid #86efac">
+  <div style="display:flex;align-items:center;gap:10px">
+    <span style="font-size:1.4rem">✅</span>
+    <div style="font-size:.85rem">
+      <strong>Versión actual:</strong> NuvoDesk 1.0 · APK debug build ·
+      La sesión se comparte con el navegador (mismas cookies HTTPS).
+    </div>
+  </div>
+</div>
+"""
+    return _shell("download", user, content)
+
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 def _body(h) -> dict:
     n = int(h.headers.get("Content-Length", 0))
@@ -3559,6 +3675,26 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", f"nd_sess=; Path={BP or '/'}; Max-Age=0; HttpOnly")
             self.end_headers(); return
 
+        # Public static assets
+        if rel == "/manifest.webmanifest":
+            manifest = json.dumps({
+                "name": "NuvoDesk",
+                "short_name": "NuvoDesk",
+                "description": "Gestión de proyectos de campo — Nuvolink",
+                "start_url": f"{BP}/",
+                "display": "standalone",
+                "background_color": "#ffffff",
+                "theme_color": "#1e40af",
+                "icons": [
+                    {"src": f"{BP}/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                    {"src": f"{BP}/static/icon-512.png", "sizes": "512x512", "type": "image/png"}
+                ]
+            })
+            self._send(200, manifest, "application/manifest+json"); return
+        if rel == "/sw.js":
+            sw = """self.addEventListener('fetch',function(e){});"""
+            self._send(200, sw, "application/javascript"); return
+
         sess = _get_sess(self)
         if not sess: self._redirect(f"{BP}/login"); return
 
@@ -3588,6 +3724,8 @@ class Handler(BaseHTTPRequestHandler):
         if rel == "/workload":
             wk = qs.get("week",[""])[0]
             self._send(200, _workload_page(sess, wk)); return
+        if rel == "/download":
+            self._send(200, _download_page(sess)); return
 
         # JSON GET APIs
         if rel == "/api/projects":
@@ -3640,6 +3778,15 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             html = _project_report(sess, int(m.group(1)))
             self._send(200 if html else 404, html or "Not found"); return
+
+        if rel == "/data/files/nuvodesk.apk":
+            apk_path = os.path.join(os.path.dirname(__file__), "data/files/nuvodesk.apk")
+            if not os.path.exists(apk_path):
+                self._send(404, "APK not found"); return
+            with open(apk_path, 'rb') as f:
+                apk_data = f.read()
+            self._send(200, apk_data, "application/vnd.android.package-archive",
+                       {"Content-Disposition": 'attachment; filename="nuvodesk.apk"'}); return
 
         self._send(404, "Not found")
 
