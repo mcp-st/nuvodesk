@@ -210,6 +210,44 @@ CREATE TABLE IF NOT EXISTS project_files (
     notes         TEXT DEFAULT '',
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS time_entries (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    started_at  TEXT NOT NULL,
+    ended_at    TEXT,
+    entry_type  TEXT NOT NULL DEFAULT 'work',
+    notes       TEXT DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS wo_comments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    body        TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS wo_extras (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    description TEXT NOT NULL,
+    quantity    REAL NOT NULL DEFAULT 1,
+    unit        TEXT NOT NULL DEFAULT 'ud',
+    notes       TEXT DEFAULT '',
+    added_by    INTEGER REFERENCES users(id),
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS equipment_items (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    brand         TEXT DEFAULT '',
+    model         TEXT NOT NULL,
+    serial_number TEXT DEFAULT '',
+    quantity      INTEGER NOT NULL DEFAULT 1,
+    notes         TEXT DEFAULT '',
+    added_by      INTEGER REFERENCES users(id),
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 MIGRATIONS = [
@@ -217,6 +255,9 @@ MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN contact_name TEXT DEFAULT ''",
     "ALTER TABLE projects ADD COLUMN contact_phone TEXT DEFAULT ''",
     "ALTER TABLE projects ADD COLUMN estimated_hours REAL DEFAULT 0",
+    "ALTER TABLE projects ADD COLUMN work_type TEXT DEFAULT 'proyecto'",
+    "ALTER TABLE projects ADD COLUMN wo_status TEXT DEFAULT ''",
+    "ALTER TABLE projects ADD COLUMN closed_at TEXT DEFAULT ''",
 ]
 
 def init_db():
@@ -319,6 +360,23 @@ STATUS_COLOR = {
     "returned":"#6d28d9","partial":"#b45309"
 }
 PRIORITY_COLOR = {"low":"#64748b","normal":"#1558c2","high":"#b45309","urgent":"#dc2626"}
+
+WORK_TYPES = {
+    'averia':        {'name': 'Avería',        'color': '#dc2626', 'icon': '⚡'},
+    'instalacion':   {'name': 'Instalación',   'color': '#2563eb', 'icon': '🔧'},
+    'mantenimiento': {'name': 'Mantenimiento', 'color': '#d97706', 'icon': '🔨'},
+    'inspeccion':    {'name': 'Inspección',    'color': '#7c3aed', 'icon': '🔍'},
+    'proyecto':      {'name': 'Proyecto',      'color': '#0d9488', 'icon': '📋'},
+}
+
+def _fmt_duration(secs):
+    if not secs or secs < 0: return "0h 00m"
+    return f"{int(secs//3600)}h {int((secs%3600)//60):02d}m"
+
+def _wt_badge(wt):
+    info = WORK_TYPES.get(wt or 'proyecto', WORK_TYPES['proyecto'])
+    c = info['color']
+    return f'<span class="badge" style="background:{c}22;color:{c}">{info["icon"]} {info["name"]}</span>'
 
 def _badge(status, text=None):
     t = text or STATUS_LABEL.get(status, status)
@@ -724,6 +782,66 @@ textarea{resize:vertical;min-height:70px}
   transition:border-color .2s,background .2s}
 .upload-area:hover,.upload-area.drag-over{border-color:var(--blue);background:var(--blue-dim)}
 .upload-area input[type=file]{display:none}
+
+/* ── timer ── */
+.timer-banner{display:flex;align-items:center;gap:16px;padding:14px 20px;
+  background:linear-gradient(135deg,#14532d,#166534);color:#fff;
+  border-radius:var(--radius);margin-bottom:16px;flex-wrap:wrap}
+.timer-banner .timer-lbl{font-size:.72rem;opacity:.75;text-transform:uppercase;
+  letter-spacing:.8px;margin-bottom:2px}
+.timer-banner .timer-time{font-size:1.6rem;font-weight:800;font-family:monospace;
+  letter-spacing:.5px;line-height:1}
+.timer-btn-start{background:#16a34a;color:#fff;border:none;border-radius:8px;
+  padding:11px 22px;font-size:.9rem;font-weight:700;cursor:pointer;
+  box-shadow:0 2px 8px rgba(22,163,74,.3);transition:all .15s;
+  display:inline-flex;align-items:center;gap:7px}
+.timer-btn-start:hover{background:#15803d;transform:translateY(-1px)}
+.timer-btn-stop{background:#dc2626;color:#fff;border:none;border-radius:8px;
+  padding:11px 22px;font-size:.9rem;font-weight:700;cursor:pointer;
+  box-shadow:0 2px 8px rgba(220,38,38,.3);transition:all .15s;
+  display:inline-flex;align-items:center;gap:7px}
+.timer-btn-stop:hover{background:#b91c1c;transform:translateY(-1px)}
+.time-summary-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));
+  gap:12px;margin-bottom:20px}
+.time-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
+  padding:14px 18px;box-shadow:var(--shadow)}
+.time-card .tc-name{font-weight:700;font-size:.86rem;margin-bottom:3px;overflow:hidden;
+  white-space:nowrap;text-overflow:ellipsis}
+.time-card .tc-hours{font-size:1.5rem;font-weight:800;color:var(--blue);line-height:1.1}
+.time-card .tc-detail{font-size:.71rem;color:var(--muted);margin-top:3px}
+
+/* ── comment thread ── */
+.comment-thread{list-style:none;margin-bottom:0}
+.comment-thread li{display:flex;gap:11px;padding-bottom:13px}
+.comment-bubble{flex:1;background:var(--bg3);border:1px solid var(--border);
+  border-radius:var(--radius);padding:10px 13px}
+.comment-meta{font-size:.72rem;color:var(--muted);margin-bottom:5px;
+  display:flex;align-items:center;gap:6px}
+.comment-body{line-height:1.55;white-space:pre-wrap;word-break:break-word;font-size:.87rem}
+.comment-own .comment-bubble{background:#eff6ff;border-color:#bfdbfe}
+.comment-add{background:var(--bg3);border:1px solid var(--border);
+  border-radius:var(--radius);padding:14px}
+.comment-add textarea{margin-bottom:10px}
+
+/* ── inline add form ── */
+.inline-add{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);
+  padding:14px 16px;margin-bottom:16px}
+.inline-add .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.inline-add .row .field{flex:1;min-width:110px;margin:0}
+.inline-add .row button{flex-shrink:0;align-self:flex-end}
+
+/* ── workload grid ── */
+.wl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:20px}
+.wl-grid{display:grid;min-width:700px}
+.wl-hd{background:var(--bg3);border:1px solid var(--border);padding:7px 10px;
+  font-size:.7rem;font-weight:700;text-align:center;text-transform:uppercase;letter-spacing:.5px}
+.wl-name{background:var(--bg3);border:1px solid var(--border);padding:8px 10px;
+  font-size:.82rem;font-weight:700;display:flex;align-items:center;min-width:140px}
+.wl-cell{border:1px solid var(--border);padding:4px;min-height:56px;background:var(--bg2)}
+.wl-cell.wl-today{background:#eff6ff}
+.wl-entry{font-size:.64rem;font-weight:700;padding:2px 5px;border-radius:4px;
+  color:#fff;margin-bottom:2px;line-height:1.35;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
 """
 
 # ── shell ─────────────────────────────────────────────────────────────────────
@@ -732,6 +850,7 @@ def _shell(page, user, content, extra_head=""):
     nav = [
         ("dashboard", f"{bp}/",           "⊞",  "Dashboard"),
         ("projects",  f"{bp}/projects",   "📋", "Proyectos"),
+        ("workload",  f"{bp}/workload",   "📊", "Cargas"),
         ("calendar",  f"{bp}/calendar",   "🗓", "Calendario"),
         ("inventory", f"{bp}/inventory",  "📦", "Inventario"),
         ("kit",       f"{bp}/kit",        "🎒", "Kit campo"),
@@ -1003,6 +1122,7 @@ def _projects_page(user, filter_status="", view="cards"):
         mc = p.get('member_count', 0)
         members_html = (f'<span style="font-size:.75rem;color:var(--muted)">👥 {mc}</span>' if mc else "")
         safe_p = {k: v for k, v in dict(p).items() if isinstance(v, (str, int, float, type(None)))}
+        wt_html = _wt_badge(p.get('work_type') or 'proyecto')
         cards_html += (
             f'<a class="proj-card" href="{BP}/projects/{p["id"]}">'
             f'<div class="proj-card-strip" style="background:{sc}"></div>'
@@ -1010,6 +1130,7 @@ def _projects_page(user, filter_status="", view="cards"):
             f'<div class="proj-card-name">{_esc(p["name"])}</div>'
             f'<div class="proj-card-client">{_esc(p["client"])}</div>'
             f'<div class="proj-card-tags">'
+            f'{wt_html}'
             f'{_badge(p["status"])}'
             f'<span style="color:{pc};font-size:.75rem;font-weight:700">▲ {plabel}</span>'
             f'{ref_chip}</div>'
@@ -1089,7 +1210,14 @@ def _projects_page(user, filter_status="", view="cards"):
     <div><label>Teléfono contacto</label><input id="f-cphone" type="tel" placeholder="+34 600 000 000"></div>
   </div>
   <div class="form-row single"><label>Descripción / Alcance</label><textarea id="f-desc"></textarea></div>
-  <div class="form-row">
+  <div class="form-row cols3">
+    <div><label>Tipo de trabajo</label><select id="f-wtype">
+      <option value="proyecto">📋 Proyecto</option>
+      <option value="instalacion">🔧 Instalación</option>
+      <option value="averia">⚡ Avería</option>
+      <option value="mantenimiento">🔨 Mantenimiento</option>
+      <option value="inspeccion">🔍 Inspección</option>
+    </select></div>
     <div><label>Estado</label><select id="f-status">
       <option value="active">Activo</option><option value="paused">Pausado</option>
       <option value="completed">Completado</option><option value="cancelled">Cancelado</option>
@@ -1122,6 +1250,7 @@ function openNewProject(){{
   ['id','name','ref','client','addr','cname','cphone','desc'].forEach(function(f){{
     document.getElementById('f-'+f).value='';
   }});
+  document.getElementById('f-wtype').value='proyecto';
   document.getElementById('f-status').value='active';
   document.getElementById('f-priority').value='normal';
   document.getElementById('f-start').value='';
@@ -1140,6 +1269,7 @@ function editProject(p){{
   document.getElementById('f-cname').value=p.contact_name||'';
   document.getElementById('f-cphone').value=p.contact_phone||'';
   document.getElementById('f-desc').value=p.description||'';
+  document.getElementById('f-wtype').value=p.work_type||'proyecto';
   document.getElementById('f-status').value=p.status||'active';
   document.getElementById('f-priority').value=p.priority||'normal';
   document.getElementById('f-start').value=p.start_date||'';
@@ -1155,6 +1285,7 @@ document.getElementById('proj-form').onsubmit=function(e){{
   var id=document.getElementById('f-id').value;
   var d={{name:document.getElementById('f-name').value,
     reference:document.getElementById('f-ref').value,
+    work_type:document.getElementById('f-wtype').value,
     client:document.getElementById('f-client').value,
     address:document.getElementById('f-addr').value,
     contact_name:document.getElementById('f-cname').value,
@@ -1291,6 +1422,36 @@ def _project_detail(user, pid):
 
     pfiles = rs(q("""SELECT * FROM project_files WHERE project_id=? ORDER BY created_at DESC""", (pid,)))
 
+    # ── new: time entries, comments, extras, equipment ──
+    time_entries_all = rs(q("""SELECT te.*,u.display_name uname
+        FROM time_entries te JOIN users u ON u.id=te.user_id
+        WHERE te.project_id=? ORDER BY te.started_at DESC LIMIT 100""", (pid,)))
+
+    active_timer = r2d(q1("""SELECT * FROM time_entries
+        WHERE project_id=? AND user_id=? AND ended_at IS NULL""",
+        (pid, user['id'])))
+
+    time_summary_rows = rs(q("""SELECT u.display_name uname,
+        COUNT(*) entries,
+        COUNT(DISTINCT date(te.started_at)) days,
+        COALESCE(SUM(CASE WHEN te.ended_at IS NOT NULL
+            THEN (julianday(te.ended_at)-julianday(te.started_at))*86400 ELSE 0 END),0) total_secs
+        FROM time_entries te JOIN users u ON u.id=te.user_id
+        WHERE te.project_id=? AND te.ended_at IS NOT NULL
+        GROUP BY u.id ORDER BY total_secs DESC""", (pid,)))
+
+    comments = rs(q("""SELECT wc.*,u.display_name uname
+        FROM wo_comments wc JOIN users u ON u.id=wc.user_id
+        WHERE wc.project_id=? ORDER BY wc.created_at ASC""", (pid,)))
+
+    extras = rs(q("""SELECT we.*,u.display_name uname
+        FROM wo_extras we LEFT JOIN users u ON u.id=we.added_by
+        WHERE we.project_id=? ORDER BY we.created_at DESC""", (pid,)))
+
+    equipment = rs(q("""SELECT ei.*,u.display_name uname
+        FROM equipment_items ei LEFT JOIN users u ON u.id=ei.added_by
+        WHERE ei.project_id=? ORDER BY ei.created_at DESC""", (pid,)))
+
     mats = rs(q("SELECT id,code,name,unit,stock_warehouse FROM materials ORDER BY name"))
     mat_opts = "".join(
         f'<option value="{m["id"]}" data-stock="{m["stock_warehouse"]}">'
@@ -1400,13 +1561,191 @@ def _project_detail(user, pid):
             f'<div class="lbl">Horas registradas</div></div></div>'
             f'<div class="progress" style="margin-top:8px"><div class="progress-bar" style="width:{h_pct}%"></div></div></div>')
 
+    # ── build time tab HTML ──
+    time_summary_html = ""
+    for ts in time_summary_rows:
+        dur = _fmt_duration(ts['total_secs'])
+        time_summary_html += (f'<div class="time-card">'
+            f'<div class="tc-name">{_esc(ts["uname"])}</div>'
+            f'<div class="tc-hours">{dur}</div>'
+            f'<div class="tc-detail">{ts["days"]} días · {ts["entries"]} registros</div>'
+            f'</div>')
+
+    te_rows = ""
+    for te in time_entries_all:
+        started = (te['started_at'] or '')[:16]
+        if te['ended_at']:
+            try:
+                from datetime import datetime as _dt2
+                dur = _fmt_duration((_dt2.fromisoformat(te['ended_at'])-_dt2.fromisoformat(te['started_at'])).total_seconds())
+            except Exception:
+                dur = '—'
+        else:
+            dur = '<span style="color:var(--green);font-weight:700">● En curso</span>'
+        type_lbl = {'work':'Trabajo','travel':'Desplazamiento','wait':'Espera'}.get(te.get('entry_type','work'), te.get('entry_type',''))
+        te_id = te['id']
+        del_btn = '' if te['ended_at'] is None else f'<button class="btn btn-danger btn-icon" onclick="delTimeEntry({te_id})">✕</button>'
+        te_rows += (f'<tr>'
+            f'<td class="muted" style="font-size:.75rem;white-space:nowrap">{_esc(started)}</td>'
+            f'<td>{_esc(te["uname"])}</td>'
+            f'<td><span class="chip" style="font-size:.7rem">{_esc(type_lbl)}</span></td>'
+            f'<td style="font-weight:700">{dur}</td>'
+            f'<td class="muted col-m-hide" style="font-size:.8rem">{_esc(te.get("notes","") or "")}</td>'
+            f'<td>{del_btn}</td></tr>')
+
+    if active_timer:
+        timer_start_html = '<div class="alert alert-green" style="margin-bottom:16px">⏱ Tienes una jornada activa en este proyecto — para el temporizador para guardarla.</div>'
+    else:
+        timer_start_html = f"""<div style="display:flex;align-items:flex-end;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+  <div class="field" style="margin:0">
+    <label>Tipo</label>
+    <select id="te-type" style="width:auto">
+      <option value="work">🔧 Trabajo</option>
+      <option value="travel">🚗 Desplazamiento</option>
+      <option value="wait">⏳ Espera</option>
+    </select>
+  </div>
+  <div class="field" style="margin:0;flex:1;min-width:160px">
+    <label>Notas (opcional)</label>
+    <input id="te-notes" placeholder="Ej: instalación rack, configuración...">
+  </div>
+  <button class="timer-btn-start" onclick="startTimer()">▶ Iniciar jornada</button>
+</div>"""
+
+    time_tab_html = f"""{timer_start_html}
+<div class="time-summary-grid">{time_summary_html or '<p class="muted" style="grid-column:1/-1;text-align:center;padding:20px">Sin registros de tiempo todavía</p>'}</div>
+<div class="card">
+  <h3 style="margin-bottom:12px">Registro de jornadas</h3>
+  <div class="tbl-wrap"><table><thead><tr>
+    <th>Inicio</th><th>Técnico</th><th>Tipo</th><th>Duración</th>
+    <th class="col-m-hide">Notas</th><th></th>
+  </tr></thead><tbody>{te_rows or "<tr><td colspan='6' class='muted' style='text-align:center;padding:16px'>Sin registros</td></tr>"}</tbody></table></div>
+</div>"""
+
+    # ── build extras tab HTML ──
+    extra_rows = ""
+    for ex in extras:
+        extra_rows += (f'<tr>'
+            f'<td>{_esc(ex["description"])}</td>'
+            f'<td style="text-align:center">{ex["quantity"]}</td>'
+            f'<td>{_esc(ex["unit"])}</td>'
+            f'<td class="muted col-m-hide" style="font-size:.8rem">{_esc(ex.get("notes","") or "")}</td>'
+            f'<td class="muted col-m-hide" style="font-size:.75rem">{_esc(ex.get("uname","") or "")}</td>'
+            f'<td><button class="btn btn-danger btn-icon" onclick="delExtra({ex["id"]})">✕</button></td></tr>')
+
+    eq_rows = ""
+    for eq in equipment:
+        eq_rows += (f'<tr>'
+            f'<td>{_esc(eq.get("brand","") or "")}</td>'
+            f'<td>{_esc(eq["model"])}</td>'
+            f'<td class="muted col-m-hide" style="font-size:.8rem">{_esc(eq.get("serial_number","") or "")}</td>'
+            f'<td style="text-align:center">{eq["quantity"]}</td>'
+            f'<td class="muted col-m-hide" style="font-size:.8rem">{_esc(eq.get("notes","") or "")}</td>'
+            f'<td><button class="btn btn-danger btn-icon" onclick="delEquipment({eq["id"]})">✕</button></td></tr>')
+
+    extras_tab_html = f"""
+<div class="card">
+  <h3 style="margin-bottom:4px">Extras / Materiales fuera de scope</h3>
+  <p class="muted" style="font-size:.8rem;margin-bottom:12px">Materiales o trabajos no incluidos en el alcance original</p>
+  <div class="inline-add" id="extra-add">
+    <div class="row">
+      <div class="field"><label>Descripción</label><input id="ex-desc" placeholder="Ej: Cable UTP extra 15m"></div>
+      <div class="field" style="flex:0 0 90px"><label>Cantidad</label><input type="number" id="ex-qty" value="1" min="0" step="0.01"></div>
+      <div class="field" style="flex:0 0 80px"><label>Unidad</label><input id="ex-unit" value="ud"></div>
+      <div class="field"><label>Notas</label><input id="ex-notes" placeholder="Motivo, detalle..."></div>
+      <button class="btn btn-primary btn-sm" onclick="addExtra()">+ Añadir</button>
+    </div>
+  </div>
+  <div class="tbl-wrap"><table><thead><tr>
+    <th>Descripción</th><th style="text-align:center">Cant.</th><th>Ud</th>
+    <th class="col-m-hide">Notas</th><th class="col-m-hide">Técnico</th><th></th>
+  </tr></thead><tbody>{extra_rows or "<tr><td colspan='6' class='muted' style='text-align:center;padding:16px'>Sin extras registrados</td></tr>"}</tbody></table></div>
+</div>
+
+<div class="card">
+  <h3 style="margin-bottom:4px">Equipos instalados</h3>
+  <p class="muted" style="font-size:.8rem;margin-bottom:12px">Inventario de equipamiento instalado en el proyecto</p>
+  <div class="inline-add">
+    <div class="row">
+      <div class="field" style="flex:0 0 120px"><label>Marca</label><input id="eq-brand" placeholder="Cisco"></div>
+      <div class="field"><label>Modelo</label><input id="eq-model" placeholder="Catalyst 9200L"></div>
+      <div class="field"><label>Nº Serie</label><input id="eq-serial" placeholder="FCW2144L0XY"></div>
+      <div class="field" style="flex:0 0 80px"><label>Cantidad</label><input type="number" id="eq-qty" value="1" min="1"></div>
+      <div class="field"><label>Notas</label><input id="eq-notes" placeholder="Rack 1 U3..."></div>
+      <button class="btn btn-primary btn-sm" onclick="addEquipment()">+ Añadir</button>
+    </div>
+  </div>
+  <div class="tbl-wrap"><table><thead><tr>
+    <th>Marca</th><th>Modelo</th><th class="col-m-hide">Nº Serie</th>
+    <th style="text-align:center">Cant.</th><th class="col-m-hide">Notas</th><th></th>
+  </tr></thead><tbody>{eq_rows or "<tr><td colspan='6' class='muted' style='text-align:center;padding:16px'>Sin equipos registrados</td></tr>"}</tbody></table></div>
+</div>"""
+
+    # ── build comments tab HTML ──
+    comment_items = ""
+    for cm in comments:
+        initials_c = "".join(w[0].upper() for w in cm['uname'].split()[:2])
+        col_c = _pcolor(cm['user_id'])
+        is_own = cm['user_id'] == user['id']
+        cm_id = cm['id']
+        del_cm = ""
+        if is_own or user.get('role') == 'admin':
+            del_cm = f' <button style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.8rem" onclick="delComment({cm_id})">✕</button>'
+        own_cls = " comment-own" if is_own else ""
+        comment_items += (f'<li class="{own_cls}">'
+            f'<div class="avatar" style="background:{col_c};flex-shrink:0">{_esc(initials_c)}</div>'
+            f'<div class="comment-bubble">'
+            f'<div class="comment-meta"><span class="fw7">{_esc(cm["uname"])}</span>'
+            f' &middot; {_esc(cm["created_at"][:16])}{del_cm}</div>'
+            f'<div class="comment-body">{_esc(cm["body"])}</div>'
+            f'</div></li>')
+
+    comments_tab_html = f"""
+{"<ul class='comment-thread'>"+comment_items+"</ul>" if comment_items else "<p class='muted' style='text-align:center;padding:24px'>Sin comentarios todavía — sé el primero</p>"}
+<div class="comment-add card">
+  <label style="margin-bottom:6px;display:block">Añadir comentario</label>
+  <textarea id="cm-body" rows="3" placeholder="Descripción del trabajo, incidencia, novedad..."></textarea>
+  <button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="addComment()">Enviar</button>
+</div>"""
+
+    # ── active timer banner ──
+    if active_timer:
+        started_iso = (active_timer.get('started_at') or '').replace(' ', 'T')
+        timer_banner_html = f"""
+<div class="timer-banner">
+  <div style="flex:1">
+    <div class="timer-lbl">⏱ Jornada activa</div>
+    <div class="timer-time" id="timer-elapsed">—</div>
+  </div>
+  <div>
+    <div style="font-size:.74rem;opacity:.75;margin-bottom:6px">Inicio: {_esc((active_timer.get('started_at') or '')[:16])}</div>
+    <button class="timer-btn-stop" onclick="stopTimer()">⏹ Parar jornada</button>
+  </div>
+</div>
+<script>
+(function(){{
+  var start=new Date("{started_iso}");
+  function tick(){{
+    var el=document.getElementById('timer-elapsed');
+    if(!el) return;
+    var diff=Math.floor((Date.now()-start.getTime())/1000);
+    var h=Math.floor(diff/3600),m=Math.floor((diff%3600)/60),s=diff%60;
+    el.textContent=(h>0?h+'h ':'')+String(m).padStart(2,'0')+'m '+String(s).padStart(2,'0')+'s';
+  }}
+  tick(); setInterval(tick,1000);
+}})();
+</script>"""
+    else:
+        timer_banner_html = ""
+
     safe_proj = {k: v for k, v in p.items() if isinstance(v, (str, int, float, type(None)))}
     content = f"""
 <div style="margin-bottom:8px"><a href="{BP}/projects" class="muted" style="font-size:.85rem">← Proyectos</a></div>
 <div class="toolbar">
   <div>
     <h1 style="margin-bottom:4px">{_esc(p["name"])}</h1>
-    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:4px">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px">
+      {_wt_badge(p.get('work_type') or 'proyecto')}
       <span class="muted" style="font-size:.88rem">{_esc(p["client"])}</span>
       {('&nbsp;<span class="chip">#'+_esc(p["reference"])+'</span>') if p.get("reference") else ""}
       &nbsp;{_badge(p["status"])}
@@ -1420,9 +1759,13 @@ def _project_detail(user, pid):
   </div>
 </div>
 {desc_html}
+{timer_banner_html}
 
-<div class="tabs">
+<div class="tabs" style="overflow-x:auto">
   <button class="tab-btn active" onclick="showTab('tareas',this)">Tareas ({len(tasks)})</button>
+  <button class="tab-btn" onclick="showTab('tiempo',this)">⏱ Tiempo</button>
+  <button class="tab-btn" onclick="showTab('seguimiento',this)">💬 Seguimiento ({len(comments)})</button>
+  <button class="tab-btn" onclick="showTab('extras',this)">🔌 Extras ({len(extras)+len(equipment)})</button>
   <button class="tab-btn" onclick="showTab('materiales',this)">Materiales ({len(assignments)})</button>
   <button class="tab-btn" onclick="showTab('diario',this)">Diario ({len(logs)})</button>
   <button class="tab-btn" onclick="showTab('equipo',this)">👥 Equipo ({len(members)})</button>
@@ -1508,6 +1851,21 @@ def _project_detail(user, pid):
 </p>
 </div>
 
+<!-- TAB TIEMPO -->
+<div id="tab-tiempo" class="tab-pane">
+{time_tab_html}
+</div>
+
+<!-- TAB SEGUIMIENTO -->
+<div id="tab-seguimiento" class="tab-pane">
+{comments_tab_html}
+</div>
+
+<!-- TAB EXTRAS -->
+<div id="tab-extras" class="tab-pane">
+{extras_tab_html}
+</div>
+
 <!-- TAB INFO -->
 <div id="tab-info" class="tab-pane">
 <div class="card">
@@ -1573,7 +1931,14 @@ def _project_detail(user, pid):
     <div><label>Teléfono</label><input id="f-cphone"></div>
   </div>
   <div class="form-row single"><label>Descripción</label><textarea id="f-desc"></textarea></div>
-  <div class="form-row">
+  <div class="form-row cols3">
+    <div><label>Tipo de trabajo</label><select id="f-wtype">
+      <option value="proyecto">📋 Proyecto</option>
+      <option value="instalacion">🔧 Instalación</option>
+      <option value="averia">⚡ Avería</option>
+      <option value="mantenimiento">🔨 Mantenimiento</option>
+      <option value="inspeccion">🔍 Inspección</option>
+    </select></div>
     <div><label>Estado</label><select id="f-status">
       <option value="active">Activo</option><option value="paused">Pausado</option>
       <option value="completed">Completado</option><option value="cancelled">Cancelado</option>
@@ -1690,6 +2055,7 @@ function editProject(p){{
   document.getElementById('f-cname').value=p.contact_name||'';
   document.getElementById('f-cphone').value=p.contact_phone||'';
   document.getElementById('f-desc').value=p.description||'';
+  document.getElementById('f-wtype').value=p.work_type||'proyecto';
   document.getElementById('f-status').value=p.status||'active';
   document.getElementById('f-priority').value=p.priority||'normal';
   document.getElementById('f-start').value=p.start_date||'';
@@ -1704,6 +2070,7 @@ document.getElementById('proj-form').onsubmit=function(e){{
   fetch(bp+'/api/projects/'+pid,{{method:'PUT',headers:{{'Content-Type':'application/json'}},
     body:JSON.stringify({{name:document.getElementById('f-name').value,
       reference:document.getElementById('f-ref').value,
+      work_type:document.getElementById('f-wtype').value,
       client:document.getElementById('f-client').value,address:document.getElementById('f-addr').value,
       contact_name:document.getElementById('f-cname').value,contact_phone:document.getElementById('f-cphone').value,
       description:document.getElementById('f-desc').value,status:document.getElementById('f-status').value,
@@ -1975,6 +2342,79 @@ function handleFiles(files){{
 function delFile(id){{
   if(!confirm('¿Eliminar este archivo?')) return;
   fetch(bp+'/api/project_files/'+id,{{method:'DELETE'}})
+    .then(function(r){{if(r.ok)location.reload();}});
+}}
+
+// ── timer ──
+function startTimer(){{
+  var type=document.getElementById('te-type')?document.getElementById('te-type').value:'work';
+  var notes=document.getElementById('te-notes')?document.getElementById('te-notes').value:'';
+  fetch(bp+'/api/projects/'+pid+'/time/start',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{entry_type:type,notes:notes}})}})
+    .then(function(r){{
+      if(r.ok) location.reload();
+      else r.json().then(function(j){{alert(j.error||'Error al iniciar jornada');}});
+    }});
+}}
+function stopTimer(){{
+  fetch(bp+'/api/projects/'+pid+'/time/stop',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},body:'{{}}'}})
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+}}
+function delTimeEntry(id){{
+  if(!confirm('¿Eliminar este registro de tiempo?')) return;
+  fetch(bp+'/api/time_entries/'+id,{{method:'DELETE'}})
+    .then(function(r){{if(r.ok)location.reload();}});
+}}
+
+// ── extras ──
+function addExtra(){{
+  var desc=document.getElementById('ex-desc').value.trim();
+  if(!desc){{alert('Escribe una descripción');return;}}
+  fetch(bp+'/api/projects/'+pid+'/extras',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{description:desc,
+      quantity:parseFloat(document.getElementById('ex-qty').value)||1,
+      unit:document.getElementById('ex-unit').value||'ud',
+      notes:document.getElementById('ex-notes').value}})}})
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+}}
+function delExtra(id){{
+  if(!confirm('¿Eliminar este extra?')) return;
+  fetch(bp+'/api/wo_extras/'+id,{{method:'DELETE'}})
+    .then(function(r){{if(r.ok)location.reload();}});
+}}
+
+// ── equipment ──
+function addEquipment(){{
+  var model=document.getElementById('eq-model').value.trim();
+  if(!model){{alert('Escribe el modelo del equipo');return;}}
+  fetch(bp+'/api/projects/'+pid+'/equipment',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{brand:document.getElementById('eq-brand').value,
+      model:model,serial_number:document.getElementById('eq-serial').value,
+      quantity:parseInt(document.getElementById('eq-qty').value)||1,
+      notes:document.getElementById('eq-notes').value}})}})
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+}}
+function delEquipment(id){{
+  if(!confirm('¿Eliminar este equipo?')) return;
+  fetch(bp+'/api/equipment_items/'+id,{{method:'DELETE'}})
+    .then(function(r){{if(r.ok)location.reload();}});
+}}
+
+// ── comments ──
+function addComment(){{
+  var body=document.getElementById('cm-body').value.trim();
+  if(!body) return;
+  fetch(bp+'/api/projects/'+pid+'/comments',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{body:body}})}})
+    .then(function(r){{if(r.ok)location.reload();}});
+}}
+function delComment(id){{
+  if(!confirm('¿Eliminar comentario?')) return;
+  fetch(bp+'/api/wo_comments/'+id,{{method:'DELETE'}})
     .then(function(r){{if(r.ok)location.reload();}});
 }}
 </script>"""
@@ -2420,6 +2860,19 @@ def _project_report(user, pid):
     logs = rs(q("""SELECT l.*,u.display_name uname
         FROM project_logs l JOIN users u ON u.id=l.user_id
         WHERE l.project_id=? ORDER BY l.created_at""", (pid,)))
+    time_summary_r = rs(q("""SELECT u.display_name uname,
+        COUNT(DISTINCT date(te.started_at)) days,
+        COALESCE(SUM(CASE WHEN te.ended_at IS NOT NULL
+            THEN (julianday(te.ended_at)-julianday(te.started_at))*86400 ELSE 0 END),0) total_secs
+        FROM time_entries te JOIN users u ON u.id=te.user_id
+        WHERE te.project_id=? AND te.ended_at IS NOT NULL
+        GROUP BY u.id ORDER BY total_secs DESC""", (pid,)))
+    extras_r = rs(q("""SELECT we.*,u.display_name uname
+        FROM wo_extras we LEFT JOIN users u ON u.id=we.added_by
+        WHERE we.project_id=? ORDER BY we.created_at""", (pid,)))
+    equipment_r = rs(q("""SELECT ei.*,u.display_name uname
+        FROM equipment_items ei LEFT JOIN users u ON u.id=ei.added_by
+        WHERE ei.project_id=? ORDER BY ei.created_at""", (pid,)))
     hours_total = q1("SELECT COALESCE(SUM(hours),0) FROM project_logs WHERE project_id=?", (pid,))
     h_logged = hours_total[0] if hours_total else 0
     h_est = p.get("estimated_hours") or 0
@@ -2455,13 +2908,17 @@ def _project_report(user, pid):
             f'<strong>{_esc(l["uname"])}</strong> — {_esc(l["created_at"][:16])}{_esc(h_str)}</div>'
             f'<div style="line-height:1.55;white-space:pre-wrap;font-size:.9rem">{_esc(l["body"])}</div></div>')
 
-    meta = [("Cliente",p.get("client","")),("Referencia",p.get("reference","")),
+    wt_info = WORK_TYPES.get(p.get('work_type') or 'proyecto', WORK_TYPES['proyecto'])
+    total_time_secs = sum(ts['total_secs'] for ts in time_summary_r)
+    meta = [("Tipo de trabajo", f'{wt_info["icon"]} {wt_info["name"]}'),
+            ("Cliente",p.get("client","")),("Referencia",p.get("reference","")),
             ("Dirección",p.get("address","")),("Técnico",p.get("tech","")),
             ("Contacto obra",p.get("contact_name","")),("Teléfono",p.get("contact_phone","")),
             ("Inicio",(p.get("start_date") or "")[:10]),("Límite",(p.get("due_date") or "")[:10]),
             ("Estado",st_label),("Prioridad",pri_label),
             ("Horas estimadas",f'{h_est}h' if h_est else ""),
-            ("Horas registradas",f'{h_logged}h'),
+            ("Tiempo total registrado", _fmt_duration(total_time_secs) if total_time_secs else "—"),
+            ("Horas diario",f'{h_logged}h'),
             ("Tareas completadas",f'{task_done}/{len(tasks)}')]
     meta_html = "".join(
         f'<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid #f0f4f8;font-size:.88rem">'
@@ -2541,6 +2998,9 @@ body{{display:block;background:#f0f4f8}}
     <h2>Diario de obra ({len(logs)} entradas · {h_logged}h)</h2>
     {logs_section}
   </div>
+  {'<div class="rsec"><h2>Resumen de tiempos por técnico</h2><table style="font-size:.87rem;width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:6px 10px;border-bottom:2px solid #dce4ee">Técnico</th><th style="text-align:center;padding:6px 10px;border-bottom:2px solid #dce4ee">Días</th><th style="text-align:center;padding:6px 10px;border-bottom:2px solid #dce4ee">Tiempo total</th></tr></thead><tbody>' + "".join(f"<tr><td style='padding:6px 10px;border-bottom:1px solid #f0f4f8'>{_esc(ts['uname'])}</td><td style='text-align:center;padding:6px 10px;border-bottom:1px solid #f0f4f8'>{ts['days']}</td><td style='text-align:center;padding:6px 10px;border-bottom:1px solid #f0f4f8;font-weight:700'>{_fmt_duration(ts['total_secs'])}</td></tr>" for ts in time_summary_r) + '</tbody></table></div>' if time_summary_r else ''}
+  {'<div class="rsec"><h2>Extras / Materiales fuera de scope (' + str(len(extras_r)) + ')</h2><table style="font-size:.87rem;width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:6px 10px;border-bottom:2px solid #dce4ee">Descripción</th><th style="text-align:center;padding:6px 10px;border-bottom:2px solid #dce4ee">Cant.</th><th style="padding:6px 10px;border-bottom:2px solid #dce4ee">Ud</th><th style="padding:6px 10px;border-bottom:2px solid #dce4ee">Notas</th></tr></thead><tbody>' + "".join(f"<tr><td style='padding:6px 10px;border-bottom:1px solid #f0f4f8'>{_esc(ex['description'])}</td><td style='text-align:center;padding:6px 10px;border-bottom:1px solid #f0f4f8'>{ex['quantity']}</td><td style='padding:6px 10px;border-bottom:1px solid #f0f4f8'>{_esc(ex['unit'])}</td><td style='padding:6px 10px;border-bottom:1px solid #f0f4f8;color:#64748b'>{_esc(ex.get('notes','') or '')}</td></tr>" for ex in extras_r) + '</tbody></table></div>' if extras_r else ''}
+  {'<div class="rsec"><h2>Equipos instalados (' + str(len(equipment_r)) + ')</h2><table style="font-size:.87rem;width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:6px 10px;border-bottom:2px solid #dce4ee">Marca</th><th style="text-align:left;padding:6px 10px;border-bottom:2px solid #dce4ee">Modelo</th><th style="padding:6px 10px;border-bottom:2px solid #dce4ee">Nº Serie</th><th style="text-align:center;padding:6px 10px;border-bottom:2px solid #dce4ee">Cant.</th></tr></thead><tbody>' + "".join(f"<tr><td style='padding:6px 10px;border-bottom:1px solid #f0f4f8'>{_esc(eq.get('brand','') or '')}</td><td style='padding:6px 10px;border-bottom:1px solid #f0f4f8'>{_esc(eq['model'])}</td><td style='padding:6px 10px;border-bottom:1px solid #f0f4f8;font-family:monospace;font-size:.82rem'>{_esc(eq.get('serial_number','') or '')}</td><td style='text-align:center;padding:6px 10px;border-bottom:1px solid #f0f4f8'>{eq['quantity']}</td></tr>" for eq in equipment_r) + '</tbody></table></div>' if equipment_r else ''}
 </div>
 </body></html>"""
 
@@ -2924,6 +3384,97 @@ function delSlot(id){{
 </script>"""
     return _shell("calendar", user, content)
 
+# ── workload view ────────────────────────────────────────────────────────────
+def _workload_page(user, week_str=""):
+    today = _date.today()
+    if week_str:
+        try:
+            ref = _date.fromisoformat(week_str)
+        except ValueError:
+            ref = today
+    else:
+        ref = today
+    # Monday of the selected week
+    mon = ref - timedelta(days=ref.weekday())
+    days = [mon + timedelta(days=i) for i in range(7)]
+    prev_mon = str(mon - timedelta(days=7))
+    next_mon = str(mon + timedelta(days=7))
+    dow_names = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
+
+    techs = rs(q("SELECT id,display_name FROM users WHERE active=1 AND role IN ('technician','admin','backoffice') ORDER BY display_name"))
+    if not techs:
+        techs = rs(q("SELECT id,display_name FROM users WHERE active=1 ORDER BY display_name"))
+
+    day_strs = [str(d) for d in days]
+    entries = rs(q(f"""SELECT te.user_id, date(te.started_at) entry_date,
+        p.id pid, p.name pname, p.work_type,
+        SUM(CASE WHEN te.ended_at IS NOT NULL
+            THEN (julianday(te.ended_at)-julianday(te.started_at))*3600 ELSE 0 END) total_h
+        FROM time_entries te JOIN projects p ON p.id=te.project_id
+        WHERE date(te.started_at) >= ? AND date(te.started_at) <= ?
+        GROUP BY te.user_id, date(te.started_at), p.id
+        ORDER BY te.user_id, entry_date""",
+        (day_strs[0], day_strs[6])))
+
+    by_user_day: dict = {}
+    for e in entries:
+        key = (e['user_id'], e['entry_date'])
+        by_user_day.setdefault(key, []).append(e)
+
+    # header row
+    hd_html = '<div class="wl-name wl-hd" style="font-size:.7rem">Técnico</div>'
+    for i, d in enumerate(days):
+        is_today = d == today
+        style = "background:#dbeafe;color:#1d4ed8" if is_today else ""
+        hd_html += f'<div class="wl-hd" style="{style}">{dow_names[i]}<br><span style="font-weight:400">{d.day}/{d.month}</span></div>'
+
+    grid_cols = "160px " + " ".join(["1fr"]*7)
+    rows_html = ""
+    for tech in techs:
+        row = f'<div class="wl-name">{_esc(tech["display_name"])}</div>'
+        for d in days:
+            is_today = d == today
+            day_entries = by_user_day.get((tech['id'], str(d)), [])
+            cell_content = ""
+            for e in day_entries:
+                wt = e.get('work_type') or 'proyecto'
+                wt_info = WORK_TYPES.get(wt, WORK_TYPES['proyecto'])
+                c = wt_info['color']
+                h = int(e['total_h'] // 60) if e['total_h'] else 0
+                m = int(e['total_h'] % 60) if e['total_h'] else 0
+                dur = f"{h}h{m:02d}m" if e['total_h'] else "—"
+                pname = e['pname']
+                cell_content += (f'<a href="{BP}/projects/{e["pid"]}" '
+                    f'class="wl-entry" style="background:{c}" '
+                    f'title="{_esc(pname)}">{_esc(pname[:16])} {dur}</a>')
+            today_cls = " wl-today" if is_today else ""
+            row += f'<div class="wl-cell{today_cls}">{cell_content}</div>'
+        rows_html += row
+
+    week_label = f"{days[0].day}/{days[0].month} – {days[6].day}/{days[6].month}/{days[6].year}"
+    content = f"""
+<div class="toolbar">
+  <h1>📊 Cargas de trabajo</h1>
+</div>
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+  <a href="{BP}/workload?week={prev_mon}" class="btn btn-ghost btn-sm">← Semana anterior</a>
+  <span class="fw7" style="min-width:180px;text-align:center">{week_label}</span>
+  <a href="{BP}/workload?week={next_mon}" class="btn btn-ghost btn-sm">Semana siguiente →</a>
+  <a href="{BP}/workload" class="btn btn-ghost btn-sm">Hoy</a>
+</div>
+<div class="card" style="padding:0;overflow:hidden">
+  <div class="wl-wrap">
+    <div class="wl-grid" style="grid-template-columns:{grid_cols}">
+      {hd_html}
+      {rows_html}
+    </div>
+  </div>
+</div>
+<p class="muted" style="font-size:.78rem;margin-top:8px">
+  Muestra jornadas registradas (temporizador) por técnico y día. Sin registros = celda vacía.
+</p>"""
+    return _shell("workload", user, content)
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 def _body(h) -> dict:
     n = int(h.headers.get("Content-Length", 0))
@@ -3034,6 +3585,9 @@ class Handler(BaseHTTPRequestHandler):
         if rel == "/users":
             if sess.get("role") != "admin": self._redirect(f"{BP}/"); return
             self._send(200, _users_page(sess)); return
+        if rel == "/workload":
+            wk = qs.get("week",[""])[0]
+            self._send(200, _workload_page(sess, wk)); return
 
         # JSON GET APIs
         if rel == "/api/projects":
@@ -3141,18 +3695,76 @@ class Handler(BaseHTTPRequestHandler):
             n = (data.get("name","") or "").strip()
             c = (data.get("client","") or "").strip()
             if not n or not c: self._json(400, {"error":"Nombre y cliente requeridos"}); return
+            wt = data.get("work_type","proyecto") or "proyecto"
             pid = run("""INSERT INTO projects
                 (name,client,description,status,priority,address,reference,
                  contact_name,contact_phone,estimated_hours,start_date,due_date,
-                 assigned_to,created_by,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))""",
+                 assigned_to,created_by,work_type,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))""",
                 (n,c,data.get("description",""),data.get("status","active"),
                  data.get("priority","normal"),data.get("address",""),
                  data.get("reference",""),data.get("contact_name",""),
                  data.get("contact_phone",""),float(data.get("estimated_hours") or 0),
                  data.get("start_date",""),data.get("due_date",""),
-                 data.get("assigned_to") or None, sess["id"]))
+                 data.get("assigned_to") or None, sess["id"], wt))
             self._json(201, {"id":pid}); return
+
+        # time tracking
+        m = re.match(r"^/api/projects/(\d+)/time/start$", rel)
+        if m:
+            pid = int(m.group(1))
+            open_entry = r2d(q1("SELECT id FROM time_entries WHERE user_id=? AND ended_at IS NULL", (sess["id"],)))
+            if open_entry:
+                self._json(400, {"error":"Ya tienes una jornada activa — párala primero"}); return
+            eid = run("""INSERT INTO time_entries (project_id,user_id,started_at,entry_type,notes)
+                VALUES(?,?,datetime('now'),?,?)""",
+                (pid, sess["id"], data.get("entry_type","work"), data.get("notes","")))
+            self._json(201, {"id":eid}); return
+
+        m = re.match(r"^/api/projects/(\d+)/time/stop$", rel)
+        if m:
+            pid = int(m.group(1))
+            open_entry = r2d(q1("SELECT id FROM time_entries WHERE project_id=? AND user_id=? AND ended_at IS NULL",
+                (pid, sess["id"])))
+            if not open_entry:
+                self._json(400, {"error":"No hay jornada activa en este proyecto"}); return
+            run("UPDATE time_entries SET ended_at=datetime('now') WHERE id=?", (open_entry["id"],))
+            self._json(200, {"ok":True}); return
+
+        # extras
+        m = re.match(r"^/api/projects/(\d+)/extras$", rel)
+        if m:
+            pid = int(m.group(1))
+            desc = (data.get("description","") or "").strip()
+            if not desc: self._json(400, {"error":"Descripción requerida"}); return
+            eid = run("""INSERT INTO wo_extras (project_id,description,quantity,unit,notes,added_by)
+                VALUES(?,?,?,?,?,?)""",
+                (pid, desc, float(data.get("quantity") or 1),
+                 data.get("unit","ud"), data.get("notes",""), sess["id"]))
+            self._json(201, {"id":eid}); return
+
+        # equipment
+        m = re.match(r"^/api/projects/(\d+)/equipment$", rel)
+        if m:
+            pid = int(m.group(1))
+            model = (data.get("model","") or "").strip()
+            if not model: self._json(400, {"error":"Modelo requerido"}); return
+            eid = run("""INSERT INTO equipment_items
+                (project_id,brand,model,serial_number,quantity,notes,added_by)
+                VALUES(?,?,?,?,?,?,?)""",
+                (pid, data.get("brand",""), model, data.get("serial_number",""),
+                 int(data.get("quantity") or 1), data.get("notes",""), sess["id"]))
+            self._json(201, {"id":eid}); return
+
+        # comments
+        m = re.match(r"^/api/projects/(\d+)/comments$", rel)
+        if m:
+            pid = int(m.group(1))
+            body = (data.get("body","") or "").strip()
+            if not body: self._json(400, {"error":"Texto requerido"}); return
+            cid = run("INSERT INTO wo_comments (project_id,user_id,body) VALUES(?,?,?)",
+                (pid, sess["id"], body))
+            self._json(201, {"id":cid}); return
 
         # tasks
         m = re.match(r"^/api/projects/(\d+)/tasks$", rel)
@@ -3332,13 +3944,14 @@ class Handler(BaseHTTPRequestHandler):
             pid = int(m.group(1))
             run("""UPDATE projects SET name=?,client=?,description=?,status=?,priority=?,
                 address=?,reference=?,contact_name=?,contact_phone=?,estimated_hours=?,
-                start_date=?,due_date=?,assigned_to=?,updated_at=datetime('now') WHERE id=?""",
+                start_date=?,due_date=?,assigned_to=?,work_type=?,updated_at=datetime('now') WHERE id=?""",
                 (data.get("name",""),data.get("client",""),data.get("description",""),
                  data.get("status","active"),data.get("priority","normal"),
                  data.get("address",""),data.get("reference",""),data.get("contact_name",""),
                  data.get("contact_phone",""),float(data.get("estimated_hours") or 0),
                  data.get("start_date",""),data.get("due_date",""),
-                 data.get("assigned_to") or None, pid))
+                 data.get("assigned_to") or None,
+                 data.get("work_type","proyecto") or "proyecto", pid))
             self._json(200, {"ok":True}); return
 
         m = re.match(r"^/api/tasks/(\d+)$", rel)
@@ -3455,6 +4068,31 @@ class Handler(BaseHTTPRequestHandler):
                 try: os.remove(fpath)
                 except: pass
                 run("DELETE FROM project_files WHERE id=?", (int(m.group(1)),))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/time_entries/(\d+)$", rel)
+        if m:
+            eid = int(m.group(1))
+            te = r2d(q1("SELECT * FROM time_entries WHERE id=?", (eid,)))
+            if te and (te['user_id'] == sess['id'] or sess.get('role') == 'admin'):
+                run("DELETE FROM time_entries WHERE id=?", (eid,))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/wo_extras/(\d+)$", rel)
+        if m:
+            run("DELETE FROM wo_extras WHERE id=?", (int(m.group(1)),))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/equipment_items/(\d+)$", rel)
+        if m:
+            run("DELETE FROM equipment_items WHERE id=?", (int(m.group(1)),))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/wo_comments/(\d+)$", rel)
+        if m:
+            cm = r2d(q1("SELECT * FROM wo_comments WHERE id=?", (int(m.group(1)),)))
+            if cm and (cm['user_id'] == sess['id'] or sess.get('role') == 'admin'):
+                run("DELETE FROM wo_comments WHERE id=?", (int(m.group(1)),))
             self._json(200, {"ok":True}); return
 
         self._json(404, {"error":"Not found"})
