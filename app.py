@@ -1247,10 +1247,12 @@ body{{
 }}
 .login-wrap{{display:flex;width:min(900px,98vw);min-height:520px;border-radius:24px;overflow:hidden;box-shadow:var(--shadow-lg);border:1px solid var(--border)}}
 .login-brand{{
-  flex:1;background:linear-gradient(150deg,#1e1b4b 0%,#3730a3 60%,#4f46e5 100%);
+  flex:1;
+  background:
+    radial-gradient(circle at 70% 10%,rgba(255,255,255,.10) 0%,transparent 55%),
+    linear-gradient(150deg,#1e1b4b 0%,#3730a3 60%,#4f46e5 100%);
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   padding:48px;text-align:center;color:#fff;
-  background-image:radial-gradient(circle at 70% 10%,rgba(255,255,255,.08) 0%,transparent 50%)
 }}
 .login-brand .brand-mark{{
   width:72px;height:72px;background:rgba(255,255,255,.2);border-radius:20px;
