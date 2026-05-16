@@ -270,6 +270,7 @@ MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN work_type TEXT DEFAULT 'proyecto'",
     "ALTER TABLE projects ADD COLUMN wo_status TEXT DEFAULT ''",
     "ALTER TABLE projects ADD COLUMN closed_at TEXT DEFAULT ''",
+    "ALTER TABLE project_logs ADD COLUMN technicians INTEGER DEFAULT 1",
 ]
 
 def init_db():
@@ -1827,7 +1828,15 @@ def _project_detail(user, pid):
     log_items = ""
     for l in logs:
         initials = "".join(w[0].upper() for w in l['uname'].split()[:2])
-        h_badge = f'<span class="tl-hours">{l["hours"]}h</span>' if l['hours'] else ""
+        techs = int(l.get('technicians') or 1)
+        ph = (l['hours'] or 0) * techs
+        if l['hours']:
+            h_badge = f'<span class="tl-hours">{l["hours"]}h'
+            if techs > 1:
+                h_badge += f' × {techs} = <strong>{ph:.1f} ph</strong>'
+            h_badge += '</span>'
+        else:
+            h_badge = ""
         log_items += (f'<li><div class="tl-dot">{_esc(initials)}</div><div class="tl-body">'
             f'<div class="tl-meta">{_esc(l["uname"])} &middot; {_esc(l["created_at"][:16])}{h_badge}</div>'
             f'<div class="tl-text">{_esc(l["body"])}</div></div></li>')
@@ -1878,17 +1887,21 @@ def _project_detail(user, pid):
             info_rows += f'<tr><td class="muted" style="width:40%;padding:8px 12px">{_esc(label)}</td><td style="padding:8px 12px">{_esc(str(val))}</td></tr>'
 
     # hours logged
-    hours_total = q1("SELECT COALESCE(SUM(hours),0) FROM project_logs WHERE project_id=?", (pid,))
-    h_logged = hours_total[0] if hours_total else 0
+    ph_row = q1("SELECT COALESCE(SUM(hours),0), COALESCE(SUM(hours*technicians),0) FROM project_logs WHERE project_id=?", (pid,))
+    h_logged = ph_row[0] if ph_row else 0
+    ph_logged = ph_row[1] if ph_row else 0
     h_est = p.get("estimated_hours") or 0
-    h_pct = min(100, int(h_logged/h_est*100)) if h_est else 0
+    h_pct = min(100, int(ph_logged/h_est*100)) if h_est else 0
     hours_html = ""
-    if h_est:
+    if h_est or ph_logged:
+        ph_extra = (f' <span class="muted" style="font-size:.78rem">({ph_logged:.1f} person-h)</span>'
+                    if ph_logged != h_logged else "")
         hours_html = (f'<div class="kpi" style="margin-bottom:16px">'
             f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
-            f'<div><div class="val" style="font-size:1.2rem">{h_logged}h <span class="muted" style="font-size:.9rem">/ {h_est}h</span></div>'
-            f'<div class="lbl">Horas registradas</div></div></div>'
-            f'<div class="progress" style="margin-top:8px"><div class="progress-bar" style="width:{h_pct}%"></div></div></div>')
+            f'<div><div class="val" style="font-size:1.2rem">{h_logged}h{ph_extra}'
+            f'{(" <span class=muted style=font-size:.9rem>/ " + str(h_est) + "h</span>") if h_est else ""}</div>'
+            f'<div class="lbl">Horas registradas{" · " + str(ph_logged) + " person-horas" if ph_logged != h_logged else ""}</div></div></div>'
+            f'{"<div class=progress style=margin-top:8px><div class=progress-bar style=width:" + str(h_pct) + "%></div></div>" if h_est else ""}</div>')
 
     # ── build time tab HTML ──
     time_summary_html = ""
@@ -2210,8 +2223,19 @@ def _project_detail(user, pid):
 {hours_html}
 <div class="card">
   <div class="field"><label>Nueva entrada</label><textarea id="log-body" rows="3" placeholder="¿Qué se hizo hoy? Instalación, incidencias, pendientes..."></textarea></div>
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:0">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:0;flex-wrap:wrap">
     <div style="flex:0 0 120px"><label>Horas trabajadas</label><input type="number" id="log-hours" min="0" max="24" step="0.5" value="0" placeholder="h"></div>
+    <div style="flex:0 0 140px"><label>Nº técnicos presentes</label>
+      <select id="log-techs">
+        <option value="1">1 técnico</option>
+        <option value="2">2 técnicos</option>
+        <option value="3">3 técnicos</option>
+        <option value="4">4 técnicos</option>
+        <option value="5">5 técnicos</option>
+        <option value="6">6 técnicos</option>
+      </select>
+    </div>
+    <div class="muted" id="log-ph-preview" style="font-size:.8rem;margin-top:18px"></div>
     <button class="btn btn-primary" onclick="addLog()" style="margin-top:18px">Añadir entrada</button>
   </div>
 </div>
@@ -2669,12 +2693,22 @@ function closeClModal(){{document.getElementById('cl-modal').classList.remove('o
 document.getElementById('cl-modal').onclick=function(e){{if(e.target===this)closeClModal();}};
 
 // ── log ──
+function updateLogPreview(){{
+  var h=parseFloat(document.getElementById('log-hours').value)||0;
+  var t=parseInt(document.getElementById('log-techs').value)||1;
+  var el=document.getElementById('log-ph-preview');
+  if(h>0&&t>1) el.textContent='→ '+( h*t).toFixed(1)+' person-horas';
+  else el.textContent='';
+}}
+document.getElementById('log-hours').addEventListener('input',updateLogPreview);
+document.getElementById('log-techs').addEventListener('change',updateLogPreview);
 function addLog(){{
   var body=document.getElementById('log-body').value.trim();
   if(!body) return;
   var hours=parseFloat(document.getElementById('log-hours').value)||0;
+  var techs=parseInt(document.getElementById('log-techs').value)||1;
   fetch(bp+'/api/projects/'+pid+'/log',{{method:'POST',headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{body:body,hours:hours}})}})
+    body:JSON.stringify({{body:body,hours:hours,technicians:techs}})}})
     .then(function(r){{if(r.ok)location.reload();}});
 }}
 
@@ -3325,8 +3359,9 @@ def _project_report(user, pid):
     equipment_r = rs(q("""SELECT ei.*,u.display_name uname
         FROM equipment_items ei LEFT JOIN users u ON u.id=ei.added_by
         WHERE ei.project_id=? ORDER BY ei.created_at""", (pid,)))
-    hours_total = q1("SELECT COALESCE(SUM(hours),0) FROM project_logs WHERE project_id=?", (pid,))
-    h_logged = hours_total[0] if hours_total else 0
+    ph_row = q1("SELECT COALESCE(SUM(hours),0),COALESCE(SUM(hours*technicians),0) FROM project_logs WHERE project_id=?", (pid,))
+    h_logged = ph_row[0] if ph_row else 0
+    ph_logged = ph_row[1] if ph_row else 0
     h_est = p.get("estimated_hours") or 0
     task_done = sum(1 for t in tasks if t['status']=='done')
     now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -3354,10 +3389,17 @@ def _project_report(user, pid):
 
     log_html = ""
     for l in logs:
-        h_str = f' · {l["hours"]}h' if l["hours"] else ""
+        techs = int(l.get('technicians') or 1)
+        ph = (l['hours'] or 0) * techs
+        if l['hours']:
+            h_str = f' · {l["hours"]}h'
+            if techs > 1:
+                h_str += f' × {techs} técnicos = <strong>{ph:.1f} person-h</strong>'
+        else:
+            h_str = ""
         log_html += (f'<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #e2e8f0">'
             f'<div style="font-size:.78rem;color:#64748b;margin-bottom:4px">'
-            f'<strong>{_esc(l["uname"])}</strong> — {_esc(l["created_at"][:16])}{_esc(h_str)}</div>'
+            f'<strong>{_esc(l["uname"])}</strong> — {_esc(l["created_at"][:16])}{h_str}</div>'
             f'<div style="line-height:1.55;white-space:pre-wrap;font-size:.9rem">{_esc(l["body"])}</div></div>')
 
     wt_info = WORK_TYPES.get(p.get('work_type') or 'proyecto', WORK_TYPES['proyecto'])
@@ -3370,7 +3412,7 @@ def _project_report(user, pid):
             ("Estado",st_label),("Prioridad",pri_label),
             ("Horas estimadas",f'{h_est}h' if h_est else ""),
             ("Tiempo total registrado", _fmt_duration(total_time_secs) if total_time_secs else "—"),
-            ("Horas diario",f'{h_logged}h'),
+            ("Horas diario",f'{h_logged}h' + (f' → {ph_logged:.1f} person-horas' if ph_logged != h_logged else "")),
             ("Tareas completadas",f'{task_done}/{len(tasks)}')]
     meta_html = "".join(
         f'<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid #f0f4f8;font-size:.88rem">'
@@ -3418,11 +3460,18 @@ body{{display:block;background:#f0f4f8}}
 </style>
 </head>
 <body>
-<div class="no-print" style="background:#0f1f35;padding:10px 20px;display:flex;align-items:center;justify-content:space-between">
+<div class="no-print" style="background:#0f1f35;padding:10px 20px;display:flex;align-items:center;justify-content:space-between;gap:10px">
   <a href="{BP}/projects/{pid}" style="color:#4db6ac;font-size:.88rem">← Volver al proyecto</a>
-  <button onclick="window.print()" style="background:#4db6ac;color:#fff;border:none;
-    padding:6px 14px;border-radius:6px;cursor:pointer;font-size:.83rem;font-weight:600">
-    🖨 Imprimir / PDF</button>
+  <div style="display:flex;gap:8px">
+    <a href="{BP}/projects/{pid}/report.md" download
+       style="background:rgba(255,255,255,.12);color:#e2e8f0;border:none;padding:6px 14px;
+              border-radius:6px;cursor:pointer;font-size:.83rem;font-weight:600;text-decoration:none">
+      ⬇ Descargar MD</a>
+    <button onclick="window.print()"
+       style="background:#4db6ac;color:#fff;border:none;padding:6px 14px;
+              border-radius:6px;cursor:pointer;font-size:.83rem;font-weight:600">
+      🖨 Guardar PDF</button>
+  </div>
 </div>
 <div class="rpage">
   <div class="rhead">
@@ -3447,7 +3496,7 @@ body{{display:block;background:#f0f4f8}}
     {mats_section}
   </div>
   <div class="rsec">
-    <h2>Diario de obra ({len(logs)} entradas · {h_logged}h)</h2>
+    <h2>Diario de obra ({len(logs)} entradas · {h_logged}h{f" / {ph_logged:.1f} person-h" if ph_logged != h_logged else ""})</h2>
     {logs_section}
   </div>
   {'<div class="rsec"><h2>Resumen de tiempos por técnico</h2><table style="font-size:.87rem;width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:6px 10px;border-bottom:2px solid #dce4ee">Técnico</th><th style="text-align:center;padding:6px 10px;border-bottom:2px solid #dce4ee">Días</th><th style="text-align:center;padding:6px 10px;border-bottom:2px solid #dce4ee">Tiempo total</th></tr></thead><tbody>' + "".join(f"<tr><td style='padding:6px 10px;border-bottom:1px solid #f0f4f8'>{_esc(ts['uname'])}</td><td style='text-align:center;padding:6px 10px;border-bottom:1px solid #f0f4f8'>{ts['days']}</td><td style='text-align:center;padding:6px 10px;border-bottom:1px solid #f0f4f8;font-weight:700'>{_fmt_duration(ts['total_secs'])}</td></tr>" for ts in time_summary_r) + '</tbody></table></div>' if time_summary_r else ''}
@@ -3455,6 +3504,122 @@ body{{display:block;background:#f0f4f8}}
   {'<div class="rsec"><h2>Equipos instalados (' + str(len(equipment_r)) + ')</h2><table style="font-size:.87rem;width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:6px 10px;border-bottom:2px solid #dce4ee">Marca</th><th style="text-align:left;padding:6px 10px;border-bottom:2px solid #dce4ee">Modelo</th><th style="padding:6px 10px;border-bottom:2px solid #dce4ee">Nº Serie</th><th style="text-align:center;padding:6px 10px;border-bottom:2px solid #dce4ee">Cant.</th></tr></thead><tbody>' + "".join(f"<tr><td style='padding:6px 10px;border-bottom:1px solid #f0f4f8'>{_esc(eq.get('brand','') or '')}</td><td style='padding:6px 10px;border-bottom:1px solid #f0f4f8'>{_esc(eq['model'])}</td><td style='padding:6px 10px;border-bottom:1px solid #f0f4f8;font-family:monospace;font-size:.82rem'>{_esc(eq.get('serial_number','') or '')}</td><td style='text-align:center;padding:6px 10px;border-bottom:1px solid #f0f4f8'>{eq['quantity']}</td></tr>" for eq in equipment_r) + '</tbody></table></div>' if equipment_r else ''}
 </div>
 </body></html>"""
+
+def _project_report_md(user, pid):
+    p = r2d(q1("""SELECT p.*,u.display_name tech FROM projects p
+        LEFT JOIN users u ON u.id=p.assigned_to WHERE p.id=?""", (pid,)))
+    if not p: return None
+    tasks = rs(q("SELECT * FROM tasks WHERE project_id=? ORDER BY status,priority DESC", (pid,)))
+    assignments = rs(q("""SELECT a.*,m.name mat_name,m.code mat_code,m.unit mat_unit
+        FROM assignments a JOIN materials m ON m.id=a.material_id
+        WHERE a.project_id=? ORDER BY m.name""", (pid,)))
+    logs = rs(q("""SELECT l.*,u.display_name uname
+        FROM project_logs l JOIN users u ON u.id=l.user_id
+        WHERE l.project_id=? ORDER BY l.created_at""", (pid,)))
+    time_summary_r = rs(q("""SELECT u.display_name uname,
+        COUNT(DISTINCT date(te.started_at)) days,
+        COALESCE(SUM(CASE WHEN te.ended_at IS NOT NULL
+            THEN (julianday(te.ended_at)-julianday(te.started_at))*86400 ELSE 0 END),0) total_secs
+        FROM time_entries te JOIN users u ON u.id=te.user_id
+        WHERE te.project_id=? AND te.ended_at IS NOT NULL
+        GROUP BY u.id ORDER BY total_secs DESC""", (pid,)))
+    extras_r = rs(q("""SELECT we.*,u.display_name uname
+        FROM wo_extras we LEFT JOIN users u ON u.id=we.added_by
+        WHERE we.project_id=? ORDER BY we.created_at""", (pid,)))
+    equipment_r = rs(q("""SELECT ei.*,u.display_name uname
+        FROM equipment_items ei LEFT JOIN users u ON u.id=ei.added_by
+        WHERE ei.project_id=? ORDER BY ei.created_at""", (pid,)))
+    kit_r = rs(q("""SELECT pk.*,u.display_name uname
+        FROM project_kit pk LEFT JOIN users u ON u.id=pk.added_by
+        WHERE pk.project_id=? ORDER BY pk.category,pk.item_name""", (pid,)))
+    ph_row = q1("SELECT COALESCE(SUM(hours),0),COALESCE(SUM(hours*technicians),0) FROM project_logs WHERE project_id=?", (pid,))
+    h_logged = ph_row[0] if ph_row else 0
+    ph_logged = ph_row[1] if ph_row else 0
+    h_est = p.get("estimated_hours") or 0
+    task_done = sum(1 for t in tasks if t['status']=='done')
+    total_time_secs = sum(ts['total_secs'] for ts in time_summary_r)
+    now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+    st_label = STATUS_LABEL.get(p['status'], p['status'])
+
+    def md_table(headers, rows):
+        sep = "|".join("---" for _ in headers)
+        head = "| " + " | ".join(headers) + " |"
+        return head + "\n|" + sep + "|\n" + "\n".join("| " + " | ".join(str(c) for c in r) + " |" for r in rows)
+
+    lines = [
+        f"# {p['name']}",
+        f"> Informe generado: {now_str}  ",
+        f"> NuvoDesk · Nuvolink Telecoms",
+        "",
+        "## Información del proyecto",
+        "",
+    ]
+    meta_fields = [
+        ("Cliente", p.get("client","")), ("Referencia", p.get("reference","")),
+        ("Dirección", p.get("address","")), ("Técnico responsable", p.get("tech","")),
+        ("Contacto obra", p.get("contact_name","")), ("Teléfono", p.get("contact_phone","")),
+        ("Inicio", (p.get("start_date") or "")[:10]), ("Límite", (p.get("due_date") or "")[:10]),
+        ("Estado", st_label),
+        ("Horas estimadas", f"{h_est}h" if h_est else ""),
+        ("Horas diario", f"{h_logged}h" + (f" → {ph_logged:.1f} person-horas" if ph_logged != h_logged else "")),
+        ("Tiempo total (timer)", _fmt_duration(total_time_secs) if total_time_secs else "—"),
+        ("Tareas completadas", f"{task_done}/{len(tasks)}"),
+    ]
+    for k, v in meta_fields:
+        if v: lines.append(f"- **{k}:** {v}")
+    lines += ["", "## Tareas", ""]
+    if tasks:
+        lines.append(md_table(["Tarea","Estado","Prioridad","Vencimiento"],
+            [(t['title'], STATUS_LABEL.get(t['status'],t['status']),
+              {"low":"Baja","normal":"Normal","high":"Alta","urgent":"Urgente"}.get(t['priority'],''),
+              (t['due_date'] or '—')[:10]) for t in tasks]))
+    else:
+        lines.append("_Sin tareas registradas._")
+    if time_summary_r:
+        lines += ["", "## Resumen de tiempos por técnico", ""]
+        lines.append(md_table(["Técnico","Días","Tiempo total"],
+            [(ts['uname'], ts['days'], _fmt_duration(ts['total_secs'])) for ts in time_summary_r]))
+    if assignments:
+        lines += ["", "## Materiales asignados", ""]
+        lines.append(md_table(["Material","Solic.","Asgn.","Cons.","Dev.","Estado","Ud"],
+            [(f"[{a['mat_code']}] {a['mat_name']}", a['qty_requested'], a['qty_assigned'],
+              a['qty_consumed'], a['qty_returned'], STATUS_LABEL.get(a['status'],a['status']), a['mat_unit'])
+             for a in assignments]))
+    if extras_r:
+        lines += ["", "## Extras / Fuera de scope", ""]
+        lines.append(md_table(["Descripción","Cant.","Ud","Notas"],
+            [(ex['description'], ex['quantity'], ex['unit'], ex.get('notes','') or '') for ex in extras_r]))
+    if equipment_r:
+        lines += ["", "## Equipos instalados", ""]
+        lines.append(md_table(["Marca","Modelo","Nº Serie","Cant."],
+            [(eq.get('brand',''), eq['model'], eq.get('serial_number','') or '', eq['quantity']) for eq in equipment_r]))
+    if kit_r:
+        _KIT_CATS = {
+            "sfp_10g":"SFP 10G","sfp_1g":"SFP 1G","glc":"GLC/SFP",
+            "fiber_patch":"Fibra óptica","patchcord_rj45":"Patch RJ45",
+            "cisco_cable":"Cable Cisco","stack_cable":"Cable STACK",
+            "poe_injector":"Inyector POE","other":"Otro",
+        }
+        lines += ["", "## Recomendaciones de material (Kit)", ""]
+        lines.append(md_table(["Categoría","Descripción","Cantidad","Estado"],
+            [(_KIT_CATS.get(k['category'],'Otro'), k['item_name'],
+              f"{k['quantity']} {k['unit']}",
+              {"pending":"Pendiente","brought":"Llevado","not_needed":"No necesario"}.get(k['status'],''))
+             for k in kit_r]))
+    if logs:
+        lines += ["", "## Diario de obra", ""]
+        for l in logs:
+            techs = int(l.get('technicians') or 1)
+            ph = (l['hours'] or 0) * techs
+            h_str = ""
+            if l['hours']:
+                h_str = f" · {l['hours']}h"
+                if techs > 1: h_str += f" × {techs} téc. = **{ph:.1f} ph**"
+            lines.append(f"### {l['created_at'][:16]} — {l['uname']}{h_str}")
+            lines.append("")
+            lines.append(l['body'])
+            lines.append("")
+    return "\n".join(lines)
 
 # ── calendar ─────────────────────────────────────────────────────────────────
 def _calendar_page(user, year, month):
@@ -4226,6 +4391,20 @@ class Handler(BaseHTTPRequestHandler):
             html = _project_report(sess, int(m.group(1)))
             self._send(200 if html else 404, html or "Not found"); return
 
+        m = re.match(r"^/projects/(\d+)/report\.md$", rel)
+        if m:
+            md = _project_report_md(sess, int(m.group(1)))
+            if not md: self._send(404, "Not found"); return
+            slug = re.sub(r'[^a-z0-9]+', '-', (md.split('\n')[0].lstrip('# ').lower()))[:40]
+            fname = f"informe-{slug}.md"
+            body = md.encode('utf-8')
+            self.send_response(200)
+            self.send_header("Content-Type", "text/markdown; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body); return
+
         if rel == "/data/files/nuvodesk.apk":
             apk_path = os.path.join(os.path.dirname(__file__), "data/files/nuvodesk.apk")
             if not os.path.exists(apk_path):
@@ -4435,8 +4614,9 @@ class Handler(BaseHTTPRequestHandler):
             body = (data.get("body","") or "").strip()
             if not body: self._json(400, {"error":"Texto requerido"}); return
             hours = float(data.get("hours") or 0)
-            lid = run("INSERT INTO project_logs (project_id,user_id,body,hours) VALUES(?,?,?,?)",
-                      (pid, sess["id"], body, hours))
+            techs = max(1, int(data.get("technicians") or 1))
+            lid = run("INSERT INTO project_logs (project_id,user_id,body,hours,technicians) VALUES(?,?,?,?,?)",
+                      (pid, sess["id"], body, hours, techs))
             run("UPDATE projects SET updated_at=datetime('now') WHERE id=?", (pid,))
             self._json(201, {"id":lid}); return
 
