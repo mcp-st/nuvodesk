@@ -747,49 +747,75 @@ def _project_detail(user, pid):
 {kit_rows_html if kit_rows_html else "<p class='muted' style='text-align:center;padding:24px'>Sin recomendaciones todavía — añade la primera.</p>"}
 </div>"""
 
+    task_done = len([t for t in tasks if t['status'] == 'done'])
+    task_total = len(tasks)
+    task_pct = int(task_done / task_total * 100) if task_total else 0
+    total_secs = sum((ts.get('total_secs') or 0) for ts in time_summary_rows)
+    total_hours_fmt = _fmt_duration(total_secs)
     safe_proj = {k: v for k, v in p.items() if isinstance(v, (str, int, float, type(None)))}
     content = f"""
 <div style="margin-bottom:8px"><a href="{BP}/projects" class="muted" style="font-size:.85rem">← Proyectos</a></div>
-<div class="toolbar">
-  <div>
-    <h1 style="margin-bottom:4px">{_esc(p["name"])}</h1>
-    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px">
-      {_wt_badge(p.get('work_type') or 'proyecto')}
-      <span class="muted" style="font-size:.88rem">{_esc(p["client"])}</span>
-      {('&nbsp;<span class="chip">#'+_esc(p["reference"])+'</span>') if p.get("reference") else ""}
-      &nbsp;{_badge(p["status"])}
-      &nbsp;<span style="color:{pcolor};font-weight:600;font-size:.8rem">▲ {plabel}</span>
+
+<div class="proj-hd">
+  <div class="proj-hd-top">
+    <div class="proj-hd-info">
+      <div class="proj-hd-title">
+        {_wt_badge(p.get('work_type') or 'proyecto')}
+        <h1>{_esc(p["name"])}</h1>
+        <span class="muted" style="font-size:.85rem">{_esc(p["client"])}</span>
+        {('&nbsp;<span class="chip">#'+_esc(p["reference"])+'</span>') if p.get("reference") else ""}
+      </div>
+      <div class="proj-hd-meta">
+        {_badge(p["status"])}
+        {_pbadge(p["priority"])}
+        {'<span class="muted" style="font-size:.8rem">📅 '+_esc((p["due_date"] or "")[:10])+'</span>' if p.get("due_date") else ""}
+      </div>
+      {('<div class="avatar-row" style="margin-top:8px">'+member_avatars+'</div>') if member_avatars else ""}
     </div>
-    {('<div class="avatar-row" style="margin-top:8px">'+member_avatars+'</div>') if member_avatars else ""}
+    <div class="proj-hd-actions">
+      <a href="{BP}/projects/{pid}/report" target="_blank" class="btn btn-ghost btn-sm">🖨 Informe</a>
+      <a href="{BP}/projects/{pid}/albaran" target="_blank" class="btn btn-ghost btn-sm">🧾 Albarán</a>
+      <button class="btn btn-ghost btn-sm" onclick="openSigModal()">✍️ Firma</button>
+      <button class="btn btn-ghost btn-sm" onclick="editProject({_jattr(safe_proj)})">✏️ Editar</button>
+    </div>
   </div>
-  <div style="display:flex;gap:8px;flex-wrap:wrap">
-    <a href="{BP}/projects/{pid}/report" target="_blank" class="btn btn-ghost btn-sm">🖨 Informe</a>
-    <a href="{BP}/projects/{pid}/albaran" target="_blank" class="btn btn-ghost btn-sm">🧾 Albarán</a>
-    <button class="btn btn-ghost btn-sm" onclick="openSigModal()">✍️ Firma cliente</button>
-    <button class="btn btn-ghost btn-sm" onclick="editProject({_jattr(safe_proj)})">✏️ Editar</button>
+  {('<div style="margin:10px 0 0;padding-top:10px;border-top:1px solid var(--border);font-size:.875rem;color:var(--muted);line-height:1.6">'+_esc(p["description"])+'</div>') if p.get("description") else ""}
+  <div class="proj-hd-kpis">
+    <div class="proj-hd-kpi">
+      <div class="v">{task_done}/{task_total}</div>
+      <div class="l">Tareas</div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:100px">
+      <div class="progress" style="width:100px"><div class="progress-bar" style="width:{task_pct}%"></div></div>
+      <div style="font-size:.7rem;color:var(--muted)">{task_pct}% completado</div>
+    </div>
+    <div class="proj-hd-kpi">
+      <div class="v">{total_hours_fmt}</div>
+      <div class="l">Horas totales</div>
+    </div>
+    <div style="margin-left:auto">
+      {'<button class="btn btn-danger btn-sm" onclick="stopTimer()">⏹ Parar jornada</button>' if active_timer else '<button class="btn btn-primary btn-sm" onclick="startTimer()">▶ Iniciar jornada</button>'}
+    </div>
   </div>
 </div>
-{desc_html}
+
 {timer_banner_html}
 
 <div class="tabs" style="overflow-x:auto">
-  <button class="tab-btn active" onclick="showTab('tareas',this)">Tareas ({len(tasks)})</button>
-  <button class="tab-btn" onclick="showTab('tiempo',this)">⏱ Tiempo</button>
-  <button class="tab-btn" onclick="showTab('seguimiento',this)">💬 Seguimiento ({len(comments)})</button>
-  <button class="tab-btn" onclick="showTab('extras',this)">🔌 Extras ({len(extras)+len(equipment)})</button>
-  <button class="tab-btn" onclick="showTab('materiales',this)">Materiales ({len(assignments)})</button>
-  <button class="tab-btn" onclick="showTab('diario',this)">Diario ({len(logs)})</button>
-  <button class="tab-btn" onclick="showTab('equipo',this)">👥 Equipo ({len(members)})</button>
-  <button class="tab-btn" onclick="showTab('archivos',this)">📁 Archivos ({len(pfiles)})</button>
-  <button class="tab-btn" onclick="showTab('kit',this)">📦 Material ({len(kit_recs)})</button>
-  <button class="tab-btn" onclick="showTab('info',this)">Info</button>
+  <button class="tab-btn active" onclick="showTab('trabajo',this)">Trabajo</button>
+  <button class="tab-btn" onclick="showTab('recursos',this)">Recursos</button>
+  <button class="tab-btn" onclick="showTab('cierre',this)">Cierre</button>
 </div>
 
-<!-- TAB TAREAS -->
-<div id="tab-tareas" class="tab-pane active">
-<div class="toolbar">
+<!-- TAB TRABAJO -->
+<div id="tab-trabajo" class="tab-pane active">
+<div class="trabajo-grid">
+
+<div class="trabajo-main">
+<div class="card" style="padding:0;overflow:hidden">
+<div class="toolbar" style="padding:16px 16px 12px">
   <div style="display:flex;align-items:center;gap:10px">
-    <h2 style="margin:0">Tareas</h2>
+    <h2 style="margin:0">Tareas ({len(tasks)})</h2>
     <div class="view-toggle" id="task-view-toggle">
       <button class="active" id="vbtn-kanban" onclick="setTaskView('kanban')">⊞ Kanban</button>
       <button id="vbtn-list" onclick="setTaskView('list')">☰ Lista</button>
@@ -797,30 +823,61 @@ def _project_detail(user, pid):
   </div>
   <button class="btn btn-primary btn-sm" onclick="openNewTask()">+ Tarea</button>
 </div>
-
-<!-- kanban view (default) -->
-<div id="tasks-kanban">
+<div id="tasks-kanban" style="padding:0 16px 16px">
 {_build_kanban(tasks, pid)}
 </div>
-
-<!-- list view (hidden by default) -->
-<div id="tasks-list" style="display:none">
-<div class="card">
-  <div class="tbl-wrap"><table><thead><tr>
-    <th style="width:40px"></th><th>Tarea</th><th>Estado</th>
-    <th class="col-m-hide">Prioridad</th><th class="col-m-hide">Vencimiento</th><th></th>
-  </tr></thead><tbody>{t_rows or "<tr><td colspan='6' class='muted' style='text-align:center;padding:20px'>Sin tareas</td></tr>"}</tbody></table></div>
+<div id="tasks-list" style="display:none;padding:0 16px 16px">
+<div class="tbl-wrap"><table><thead><tr>
+  <th style="width:40px"></th><th>Tarea</th><th>Estado</th>
+  <th class="col-m-hide">Prioridad</th><th class="col-m-hide">Vencimiento</th><th></th>
+</tr></thead><tbody>{t_rows or "<tr><td colspan='6' class='muted' style='text-align:center;padding:20px'>Sin tareas</td></tr>"}</tbody></table></div>
 </div>
 </div>
 </div>
 
-<!-- TAB MATERIALES -->
-<div id="tab-materiales" class="tab-pane">
-<div class="toolbar">
-  <h2>Materiales asignados</h2>
-  <button class="btn btn-primary btn-sm" onclick="openNewAssign()">+ Material</button>
+<div class="trabajo-side">
+<div class="time-section">
+  <h3 style="margin-bottom:14px;font-size:.95rem;font-weight:700">⏱ Tiempo</h3>
+  {time_tab_html}
 </div>
+<div class="comment-section">
+  <h3 style="margin-bottom:14px;font-size:.95rem;font-weight:700">💬 Seguimiento ({len(comments)})</h3>
+  {comments_tab_html}
+</div>
+</div>
+
+</div>
+</div>
+
+<!-- TAB RECURSOS -->
+<div id="tab-recursos" class="tab-pane">
+
 <div class="card">
+  <div class="toolbar" style="margin-bottom:12px"><h2>📁 Archivos ({len(pfiles)})</h2></div>
+  <div class="upload-area" id="upload-area" onclick="document.getElementById('file-input').click()"
+    ondragover="event.preventDefault();this.classList.add('drag-over')"
+    ondragleave="this.classList.remove('drag-over')"
+    ondrop="event.preventDefault();this.classList.remove('drag-over');handleFiles(event.dataTransfer.files)">
+    <input type="file" id="file-input" multiple onchange="handleFiles(this.files)">
+    <div style="font-size:1.8rem;margin-bottom:6px">📎</div>
+    <div class="fw7" style="font-size:.9rem">Arrastra archivos aquí o haz clic para seleccionar</div>
+    <div class="muted" style="font-size:.78rem;margin-top:4px">Imágenes, PDFs, documentos — sin límite de tipo</div>
+  </div>
+  <div id="upload-status"></div>
+  <div class="file-grid" id="file-grid">
+{_build_file_grid(pfiles, pid)}
+  </div>
+</div>
+
+{kit_tab_html}
+
+{extras_tab_html}
+
+<div class="card">
+  <div class="toolbar" style="margin-bottom:12px">
+    <h3>Materiales asignados ({len(assignments)})</h3>
+    <button class="btn btn-primary btn-sm" onclick="openNewAssign()">+ Material</button>
+  </div>
   <div class="tbl-wrap"><table><thead><tr>
     <th>Material</th><th style="text-align:center">Solicitado</th>
     <th style="text-align:center">Asignado</th><th style="text-align:center">Consumido</th>
@@ -828,13 +885,16 @@ def _project_detail(user, pid):
     <th class="col-m-hide">Ud</th><th></th>
   </tr></thead><tbody>{a_rows or "<tr><td colspan='8' class='muted' style='text-align:center;padding:20px'>Sin materiales asignados</td></tr>"}</tbody></table></div>
 </div>
+
 </div>
 
-<!-- TAB DIARIO -->
-<div id="tab-diario" class="tab-pane">
-<div class="toolbar"><h2>Diario de obra</h2></div>
-{hours_html}
+<!-- TAB CIERRE -->
+<div id="tab-cierre" class="tab-pane">
+
 <div class="card">
+<div class="toolbar"><h2>Diario de obra ({len(logs)})</h2></div>
+{hours_html}
+<div class="card" style="border:1px solid var(--border);margin-top:0">
   <div class="field"><label>Nueva entrada</label><textarea id="log-body" rows="3" placeholder="¿Qué se hizo hoy? Instalación, incidencias, pendientes..."></textarea></div>
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:0;flex-wrap:wrap">
     <div style="flex:0 0 120px"><label>Horas trabajadas</label><input type="number" id="log-hours" min="0" max="24" step="0.5" value="0" placeholder="h"></div>
@@ -855,51 +915,25 @@ def _project_detail(user, pid):
 {"<ul class='timeline'>" + log_items + "</ul>" if log_items else "<p class='muted' style='text-align:center;padding:20px'>Sin entradas en el diario todavía</p>"}
 </div>
 
-<!-- TAB EQUIPO -->
-<div id="tab-equipo" class="tab-pane">
+<div class="card">
 <div class="toolbar">
-  <h2>Equipo del proyecto</h2>
+  <h2>👥 Equipo ({len(members)})</h2>
   <button class="btn btn-primary btn-sm" onclick="openAddMember()">+ Añadir persona</button>
 </div>
-<div class="card">
-  <div class="tbl-wrap"><table><thead><tr>
-    <th style="width:36px"></th><th>Técnico</th>
-    <th class="col-m-hide">Período</th><th class="col-m-hide">Notas</th><th></th>
-  </tr></thead><tbody>
-    {member_rows or "<tr><td colspan='5' class='muted' style='text-align:center;padding:20px'>Sin personas asignadas al proyecto</td></tr>"}
-  </tbody></table></div>
-</div>
-<p class="muted" style="font-size:.82rem;padding:0 2px">
-  Las personas aquí asignadas aparecen en el calendario de movimientos de personal.
-</p>
+<div class="tbl-wrap"><table><thead><tr>
+  <th style="width:36px"></th><th>Técnico</th>
+  <th class="col-m-hide">Período</th><th class="col-m-hide">Notas</th><th></th>
+</tr></thead><tbody>
+  {member_rows or "<tr><td colspan='5' class='muted' style='text-align:center;padding:20px'>Sin personas asignadas al proyecto</td></tr>"}
+</tbody></table></div>
+<p class="muted" style="font-size:.82rem;padding:12px 0 0">Las personas aquí asignadas aparecen en el calendario de movimientos de personal.</p>
 </div>
 
-<!-- TAB TIEMPO -->
-<div id="tab-tiempo" class="tab-pane">
-{time_tab_html}
-</div>
-
-<!-- TAB SEGUIMIENTO -->
-<div id="tab-seguimiento" class="tab-pane">
-{comments_tab_html}
-</div>
-
-<!-- TAB EXTRAS -->
-<div id="tab-extras" class="tab-pane">
-{extras_tab_html}
-</div>
-
-<!-- TAB KIT MATERIAL -->
-<div id="tab-kit" class="tab-pane">
-{kit_tab_html}
-</div>
-
-<!-- TAB INFO -->
-<div id="tab-info" class="tab-pane">
 <div class="card">
   <table><tbody>{info_rows or "<tr><td class='muted'>Sin datos adicionales</td></tr>"}</tbody></table>
 </div>
 {f'<div class="card"><h3 style="margin-bottom:12px">Historial de cambios</h3>{audit_html}</div>' if audit_html else ""}
+
 </div>
 
 <!-- MODAL kit recomendación -->
@@ -957,26 +991,6 @@ def _project_detail(user, pid):
     <button class="btn btn-primary" onclick="doAddMember()">Añadir</button>
   </div>
 </div></div>
-
-<!-- TAB ARCHIVOS -->
-<div id="tab-archivos" class="tab-pane">
-<div class="toolbar"><h2>Archivos del proyecto</h2></div>
-
-<div class="upload-area" id="upload-area" onclick="document.getElementById('file-input').click()"
-  ondragover="event.preventDefault();this.classList.add('drag-over')"
-  ondragleave="this.classList.remove('drag-over')"
-  ondrop="event.preventDefault();this.classList.remove('drag-over');handleFiles(event.dataTransfer.files)">
-  <input type="file" id="file-input" multiple onchange="handleFiles(this.files)">
-  <div style="font-size:1.8rem;margin-bottom:6px">📎</div>
-  <div class="fw7" style="font-size:.9rem">Arrastra archivos aquí o haz clic para seleccionar</div>
-  <div class="muted" style="font-size:.78rem;margin-top:4px">Imágenes, PDFs, documentos — sin límite de tipo</div>
-</div>
-<div id="upload-status"></div>
-
-<div class="file-grid" id="file-grid">
-{_build_file_grid(pfiles, pid)}
-</div>
-</div>
 
 <!-- MODAL editar proyecto -->
 <div class="modal-bg" id="proj-modal">

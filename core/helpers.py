@@ -89,12 +89,12 @@ STATUS_LABEL = {
     "returned":"Devuelto","partial":"Parcial"
 }
 STATUS_COLOR = {
-    "active":"#15803d","paused":"#b45309","completed":"#1558c2","cancelled":"#6b7280",
-    "pending":"#64748b","in_progress":"#1558c2","done":"#15803d","blocked":"#dc2626",
-    "requested":"#b45309","assigned":"#1558c2","consumed":"#15803d",
-    "returned":"#6d28d9","partial":"#b45309"
+    "active":"#15803d","paused":"#b45309","completed":"#78716c","cancelled":"#a8a29e",
+    "pending":"#78716c","in_progress":"#0f172a","done":"#15803d","blocked":"#dc2626",
+    "requested":"#b45309","assigned":"#0f172a","consumed":"#15803d",
+    "returned":"#78716c","partial":"#b45309"
 }
-PRIORITY_COLOR = {"low":"#64748b","normal":"#1558c2","high":"#b45309","urgent":"#dc2626"}
+PRIORITY_COLOR = {"low":"#a8a29e","normal":"#78716c","high":"#b45309","urgent":"#dc2626"}
 
 WORK_TYPES = {
     'averia':        {'name': 'Avería',        'color': '#dc2626', 'icon': '⚡'},

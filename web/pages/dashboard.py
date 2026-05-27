@@ -78,9 +78,9 @@ def _my_day(user):
     content = f"""<div class="toolbar"><h1>Mi jornada</h1>
   <a href="{BP}/projects?new=averia" class="btn btn-primary">⚡ Avería rápida</a></div>
 <div class="card-grid" style="margin-bottom:16px">
-  <div class="kpi"><div class="val text-green">{len(my_projects)}</div><div class="lbl">Proyectos activos</div></div>
+  <div class="kpi g"><div class="val">{len(my_projects)}</div><div class="lbl">Proyectos activos</div></div>
   <div class="kpi"><div class="val">{len(my_tasks)}</div><div class="lbl">Tareas pendientes</div></div>
-  <div class="kpi"><div class="val" style="color:var(--blue)">{h_today}h</div><div class="lbl">Horas hoy</div></div>
+  <div class="kpi"><div class="val">{h_today}h</div><div class="lbl">Horas hoy</div></div>
 </div>
 {timer_html}
 <div class="card">
@@ -131,12 +131,12 @@ def _dashboard(user):
 
 
     kpis = f"""<div class="card-grid">
-  <div class="kpi"><div class="val">{ps.get('t',0)}</div><div class="lbl">Proyectos</div></div>
-  <div class="kpi"><div class="val text-green">{ps.get('active',0)}</div><div class="lbl">Activos</div></div>
-  <div class="kpi"><div class="val text-amber">{ps.get('paused',0)}</div><div class="lbl">Pausados</div></div>
-  <div class="kpi"><div class="val" style="color:var(--blue)">{ps.get('done',0)}</div><div class="lbl">Completados</div></div>
-  <div class="kpi"><div class="val">{ts.get('t',0)}</div><div class="lbl">Tareas</div></div>
-  <div class="kpi"><div class="val text-red">{ts.get('blocked',0)}</div><div class="lbl">Bloqueadas</div></div>
+  <div class="kpi"><div class="val">{ps.get('t') or 0}</div><div class="lbl">Proyectos</div></div>
+  <div class="kpi g"><div class="val">{ps.get('active') or 0}</div><div class="lbl">Activos</div></div>
+  <div class="kpi a"><div class="val">{ps.get('paused') or 0}</div><div class="lbl">Pausados</div></div>
+  <div class="kpi"><div class="val">{ps.get('done') or 0}</div><div class="lbl">Completados</div></div>
+  <div class="kpi"><div class="val">{ts.get('t') or 0}</div><div class="lbl">Tareas</div></div>
+  <div class="kpi r"><div class="val">{ts.get('blocked') or 0}</div><div class="lbl">Bloqueadas</div></div>
 </div>"""
 
     low_html = ""

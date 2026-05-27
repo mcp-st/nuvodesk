@@ -55,40 +55,41 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
         _sel = ' selected' if tech_filter == str(_t["id"]) else ''
         tech_sel_opts2 += f'<option value="{_pu(tech=str(_t["id"]))}" {_sel}>{_esc(_t["display_name"])}</option>'
 
-    strip_color = {"active":"#15803d","paused":"#b45309","completed":"#1558c2",
-                   "cancelled":"#94a3b8","":  "#94a3b8"}
+    _border_color = {"active":"#15803d","paused":"#b45309","completed":"#78716c",
+                     "cancelled":"#a8a29e","": "#a8a29e"}
+    _prog_color   = {"active":"#15803d","paused":"#b45309","completed":"#78716c",
+                     "cancelled":"#a8a29e","": "#a8a29e"}
 
     # ── card view ──
     cards_html = ""
     for p in projects:
         pct = int(p['task_d']/p['task_t']*100) if p['task_t'] else 0
-        sc = strip_color.get(p['status'], "#94a3b8")
-        pc = PRIORITY_COLOR.get(p['priority'], "#64748b")
-        ref_chip = f'<span class="chip" style="background:#f1f5f9;color:#64748b">#{_esc(p["reference"])}</span>' if p.get("reference") else ""
+        bc = _border_color.get(p['status'], "#a8a29e")
+        pc_color = _prog_color.get(p['status'], "#a8a29e")
+        ref_chip = f'<span class="chip" style="background:#f5f5f4;color:#78716c;border:1px solid #e7e5e4">#{_esc(p["reference"])}</span>' if p.get("reference") else ""
         due_html = f'🗓 {_esc(p["due_date"][:10])}' if p.get("due_date") else ""
         tech_html = f'👤 {_esc(p["tech"])}' if p.get("tech") else ""
-        plabel = {"low":"Baja","normal":"Normal","high":"Alta","urgent":"Urgente"}.get(p["priority"],"")
         prog_html = ""
         if p["task_t"]:
             prog_html = (f'<div class="proj-card-prog">'
                 f'<div class="proj-card-prog-label">'
                 f'<span>Tareas</span><span>{p["task_d"]}/{p["task_t"]}</span></div>'
-                f'<div class="progress"><div class="progress-bar" style="width:{pct}%"></div></div></div>')
+                f'<div class="progress"><div class="progress-bar" style="width:{pct}%;background:{pc_color}"></div></div></div>')
         mc = p.get('member_count', 0)
         members_html = (f'<span style="font-size:.75rem;color:var(--muted)">👥 {mc}</span>' if mc else "")
         safe_p = {k: v for k, v in dict(p).items() if isinstance(v, (str, int, float, type(None)))}
         wt_html = _wt_badge(p.get('work_type') or 'proyecto')
         search_val = f"{p['name']} {p['client']} {p.get('reference','') or ''} {p.get('tech','') or ''}".lower()
         cards_html += (
-            f'<a class="proj-card" href="{BP}/projects/{p["id"]}" data-search="{_esc(search_val)}">'
-            f'<div class="proj-card-strip" style="background:{sc}"></div>'
+            f'<a class="proj-card" href="{BP}/projects/{p["id"]}" data-search="{_esc(search_val)}"'
+            f' style="border-left:3px solid {bc}">'
             f'<div class="proj-card-body">'
             f'<div class="proj-card-name">{_esc(p["name"])}</div>'
             f'<div class="proj-card-client">{_esc(p["client"])}</div>'
             f'<div class="proj-card-tags">'
             f'{wt_html}'
             f'{_badge(p["status"])}'
-            f'<span style="color:{pc};font-size:.75rem;font-weight:700">▲ {plabel}</span>'
+            f'{_pbadge(p["priority"])}'
             f'{ref_chip}</div>'
             f'{prog_html}'
             f'</div>'

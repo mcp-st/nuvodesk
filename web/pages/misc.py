@@ -22,22 +22,18 @@ def _login_page(err=""):
 body{{
   display:flex;align-items:center;justify-content:center;min-height:100dvh;
   background:var(--bg);
-  background-image:radial-gradient(circle at 20% 20%,rgba(67,97,238,.1) 0%,transparent 50%),
-                   radial-gradient(circle at 80% 80%,rgba(114,9,183,.08) 0%,transparent 50%)
 }}
-.login-wrap{{display:flex;width:min(900px,98vw);min-height:520px;border-radius:24px;overflow:hidden;box-shadow:var(--shadow-lg);border:1px solid var(--border)}}
+.login-wrap{{display:flex;width:min(900px,98vw);min-height:520px;border-radius:16px;overflow:hidden;box-shadow:var(--shadow-lg);border:1px solid var(--border)}}
 .login-brand{{
-  flex:1;
-  background:radial-gradient(circle at 70% 10%,rgba(255,255,255,.10) 0%,transparent 55%),
-             linear-gradient(150deg,#1e1b4b 0%,#3730a3 60%,#4f46e5 100%);
+  flex:1;background:#0f172a;
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   padding:48px;text-align:center;color:#fff;
 }}
 .login-brand .brand-mark{{
-  width:72px;height:72px;background:rgba(255,255,255,.2);border-radius:20px;
+  width:72px;height:72px;background:rgba(255,255,255,.12);border-radius:16px;
   display:flex;align-items:center;justify-content:center;
-  font-size:2.2rem;font-weight:900;margin-bottom:22px;backdrop-filter:blur(10px);
-  border:1.5px solid rgba(255,255,255,.3);box-shadow:0 8px 32px rgba(0,0,0,.15)
+  font-size:2.2rem;font-weight:900;margin-bottom:22px;
+  border:1px solid rgba(255,255,255,.2);
 }}
 .login-brand h2{{font-size:1.9rem;font-weight:800;letter-spacing:-.4px;margin-bottom:8px}}
 .login-brand p{{opacity:.92;font-size:.95rem;line-height:1.6;max-width:240px}}
@@ -50,10 +46,9 @@ body{{
   padding:48px 40px
 }}
 .login-form-side .form-logo{{
-  width:44px;height:44px;background:var(--grad);border-radius:12px;
+  width:44px;height:44px;background:#0f172a;border-radius:12px;
   display:flex;align-items:center;justify-content:center;
   font-size:1.3rem;font-weight:900;color:#fff;margin-bottom:20px;
-  box-shadow:0 4px 14px rgba(67,97,238,.35)
 }}
 .login-form-side h1{{font-size:1.5rem;font-weight:800;margin-bottom:4px;letter-spacing:-.3px;text-align:center}}
 .login-form-side .sub{{color:var(--muted);font-size:.85rem;margin-bottom:32px;text-align:center}}
