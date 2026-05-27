@@ -1568,7 +1568,7 @@ class Handler(BaseHTTPRequestHandler):
         if rel in ("/", "/dashboard"):
             self._send(200, _dashboard(sess)); return
         if rel == "/projects":
-            self._send(200, _projects_page(sess, qs.get("status",[""])[0], qs.get("view",["cards"])[0])); return
+            self._send(200, _projects_page(sess, qs.get("status",[""])[0], qs.get("view",["cards"])[0], qs.get("new",[""])[0])); return
         m = re.match(r"^/projects/(\d+)$", rel)
         if m:
             html = _project_detail(sess, int(m.group(1)))

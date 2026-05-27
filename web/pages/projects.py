@@ -9,7 +9,7 @@ from core.helpers import (
 )
 from web.layout import _shell
 
-def _projects_page(user, filter_status="", view="cards"):
+def _projects_page(user, filter_status="", view="cards", new=""):
     where = "WHERE p.status=?" if filter_status else ""
     params = (filter_status,) if filter_status else ()
     projects = rs(q(f"""SELECT p.*,u.display_name tech,
@@ -268,6 +268,7 @@ document.getElementById('proj-form').onsubmit=function(e){{
     }})
     .catch(function(err){{alert(err.message);}});
 }};
+{("(function(){var today=new Date().toISOString().slice(0,10);openNewProject();document.getElementById('f-wtype').value='averia';document.getElementById('f-priority').value='urgent';document.getElementById('f-start').value=today;document.getElementById('f-name').focus();})();" if new=="averia" else "")}
 function showClosingModal(s){{
   var el=document.getElementById('closing-modal');
   var pct=s.tasks_total?Math.round(s.tasks_done/s.tasks_total*100):100;
