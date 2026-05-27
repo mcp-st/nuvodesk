@@ -9,9 +9,23 @@ from core.helpers import (
 )
 from web.layout import _shell
 
-def _projects_page(user, filter_status="", view="cards", new=""):
-    where = "WHERE p.status=?" if filter_status else ""
-    params = (filter_status,) if filter_status else ()
+def _projects_page(user, filter_status="", view="cards", new="", tech_filter="", wtype_filter=""):
+    conds, params_list = [], []
+    if filter_status:
+        conds.append("p.status=?"); params_list.append(filter_status)
+    if tech_filter:
+        conds.append("p.assigned_to=?"); params_list.append(int(tech_filter))
+    if wtype_filter:
+        conds.append("p.work_type=?"); params_list.append(wtype_filter)
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    params = tuple(params_list)
+
+    def _pu(**kw):
+        p = {"status": filter_status, "view": view, "tech": tech_filter, "wtype": wtype_filter}
+        p.update(kw)
+        qs = "&".join(f"{k}={v}" for k, v in p.items() if v and not (k == "view" and v == "cards"))
+        return f"{BP}/projects" + (f"?{qs}" if qs else "")
+
     projects = rs(q(f"""SELECT p.*,u.display_name tech,
         (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id) task_t,
         (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id AND t.status='done') task_d,
@@ -24,10 +38,22 @@ def _projects_page(user, filter_status="", view="cards", new=""):
     techs = rs(q("SELECT id,display_name FROM users WHERE active=1 ORDER BY display_name"))
     tech_opts = "".join(f'<option value="{t["id"]}">{_esc(t["display_name"])}</option>' for t in techs)
 
-    fbtn = lambda s, l: (f'<a href="{BP}/projects{"?status="+s if s else ""}{"&view="+view if view else ""}" '
+    fbtn = lambda s, l: (f'<a href="{_pu(status=s)}" '
         f'class="btn btn-sm {"btn-primary" if filter_status==s else "btn-ghost"}">{l}</a>')
     filters = (fbtn("","Todos")+fbtn("active","Activos")+fbtn("paused","Pausados")
                +fbtn("completed","Completados")+fbtn("cancelled","Cancelados"))
+
+    wtype_opts = ('<option value="' + _pu(wtype="") + '"' +
+                  (' selected' if not wtype_filter else '') + '>Todos los tipos</option>')
+    for _key, _info in WORK_TYPES.items():
+        _sel = ' selected' if wtype_filter == _key else ''
+        wtype_opts += f'<option value="{_pu(wtype=_key)}"{_sel}>{_info["icon"]} {_info["name"]}</option>'
+
+    tech_sel_opts2 = ('<option value="' + _pu(tech="") + '"' +
+                     (' selected' if not tech_filter else '') + '>Todos los técnicos</option>')
+    for _t in techs:
+        _sel = ' selected' if tech_filter == str(_t["id"]) else ''
+        tech_sel_opts2 += f'<option value="{_pu(tech=str(_t["id"]))}" {_sel}>{_esc(_t["display_name"])}</option>'
 
     strip_color = {"active":"#15803d","paused":"#b45309","completed":"#1558c2",
                    "cancelled":"#94a3b8","":  "#94a3b8"}
@@ -93,9 +119,10 @@ def _projects_page(user, filter_status="", view="cards", new=""):
             f'<a href="{BP}/projects/{p["id"]}" class="btn btn-ghost btn-icon">→</a></td></tr>')
 
     empty = "<p class='muted' style='text-align:center;padding:32px;grid-column:1/-1'>Sin proyectos todavía</p>"
-    view_qs = f"{'&status='+filter_status if filter_status else ''}"
-    vt_cards = "active" if view == "cards" else ""
-    vt_list  = "active" if view == "list"  else ""
+    vt_cards  = "active" if view == "cards" else ""
+    vt_list   = "active" if view == "list"  else ""
+    url_cards = _pu(view="cards")
+    url_list  = _pu(view="list")
 
     content = f"""
 <div class="toolbar">
@@ -110,13 +137,17 @@ def _projects_page(user, filter_status="", view="cards", new=""):
              style="padding-left:30px;min-width:220px" oninput="filterProjects(this.value)">
     </div>
     <div class="view-toggle">
-      <button class="{vt_cards}" onclick="window.location='{BP}/projects?view=cards{view_qs}'">⊞ Tarjetas</button>
-      <button class="{vt_list}"  onclick="window.location='{BP}/projects?view=list{view_qs}'">☰ Lista</button>
+      <button class="{vt_cards}" onclick="window.location='{url_cards}'">⊞ Tarjetas</button>
+      <button class="{vt_list}"  onclick="window.location='{url_list}'">☰ Lista</button>
     </div>
     <button class="btn btn-primary" onclick="openNewProject()">+ Nuevo</button>
   </div>
 </div>
-<div class="toolbar-left" style="margin-bottom:18px">{filters}</div>
+<div class="toolbar-left" style="margin-bottom:18px;gap:8px;flex-wrap:wrap">
+  {filters}
+  <select onchange="location.href=this.value" style="height:32px;padding:0 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:.82rem">{wtype_opts}</select>
+  <select onchange="location.href=this.value" style="height:32px;padding:0 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:.82rem">{tech_sel_opts2}</select>
+</div>
 <div id="proj-search-empty" style="display:none;text-align:center;padding:32px;color:var(--muted)">
   Sin resultados para la búsqueda.
 </div>

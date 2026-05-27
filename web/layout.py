@@ -22,7 +22,7 @@ def _shell(page, user, content, extra_head=""):
         ("workload",  f"{bp}/workload",  "Cargas"),
         ("calendar",  f"{bp}/calendar",  "Calendario"),
         ("inventory", f"{bp}/inventory", "Inventario"),
-        ("kit",       f"{bp}/kit",       "Material rec."),
+        ("kit",       f"{bp}/kit",       "Kit campo"),
         ("users",     f"{bp}/users",     "Usuarios"),
         ("download",  f"{bp}/download",  "App móvil"),
     ]

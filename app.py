@@ -478,7 +478,36 @@ def _project_detail(user, pid):
   <button class="timer-btn-start" onclick="startTimer()">▶ Iniciar jornada</button>
 </div>"""
 
+    today_str = _date.today().isoformat()
     time_tab_html = f"""{timer_start_html}
+<details style="margin-bottom:16px">
+  <summary style="cursor:pointer;font-size:.875rem;font-weight:600;color:var(--muted);padding:8px 0;user-select:none">
+    + Registrar horas manualmente
+  </summary>
+  <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;padding:12px 0 4px">
+    <div class="field" style="margin:0;flex:0 0 140px">
+      <label>Fecha</label>
+      <input type="date" id="ml-date" value="{today_str}">
+    </div>
+    <div class="field" style="margin:0;flex:0 0 100px">
+      <label>Horas</label>
+      <input type="number" id="ml-hours" min="0.25" step="0.25" value="1" placeholder="1.5">
+    </div>
+    <div class="field" style="margin:0">
+      <label>Tipo</label>
+      <select id="ml-type">
+        <option value="work">🔧 Trabajo</option>
+        <option value="travel">🚗 Desplazamiento</option>
+        <option value="wait">⏳ Espera</option>
+      </select>
+    </div>
+    <div class="field" style="margin:0;flex:1;min-width:160px">
+      <label>Notas</label>
+      <input id="ml-notes" placeholder="Descripción del trabajo...">
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="addManualLog()">Registrar</button>
+  </div>
+</details>
 <div class="time-summary-grid">{time_summary_html or '<p class="muted" style="grid-column:1/-1;text-align:center;padding:20px">Sin registros de tiempo todavía</p>'}</div>
 <div class="card">
   <h3 style="margin-bottom:12px">Registro de jornadas</h3>
@@ -1352,6 +1381,19 @@ function delTimeEntry(id){{
   fetch(bp+'/api/time_entries/'+id,{{method:'DELETE'}})
     .then(function(r){{if(r.ok)location.reload();}});
 }}
+function addManualLog(){{
+  var date=document.getElementById('ml-date').value;
+  var hours=parseFloat(document.getElementById('ml-hours').value);
+  if(!date||!hours||hours<=0){{alert('Fecha y horas son obligatorias');return;}}
+  fetch(bp+'/api/projects/'+pid+'/time/log',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{date:date,hours:hours,
+      entry_type:document.getElementById('ml-type').value,
+      notes:document.getElementById('ml-notes').value}})}})
+    .then(function(r){{return r.ok?r.json():r.json().then(function(j){{throw new Error(j.error||'Error');}});}})
+    .then(function(){{location.reload();}})
+    .catch(function(err){{alert(err.message);}});
+}}
 
 // ── extras ──
 function addExtra(){{
@@ -1568,7 +1610,7 @@ class Handler(BaseHTTPRequestHandler):
         if rel in ("/", "/dashboard"):
             self._send(200, _dashboard(sess)); return
         if rel == "/projects":
-            self._send(200, _projects_page(sess, qs.get("status",[""])[0], qs.get("view",["cards"])[0], qs.get("new",[""])[0])); return
+            self._send(200, _projects_page(sess, qs.get("status",[""])[0], qs.get("view",["cards"])[0], qs.get("new",[""])[0], qs.get("tech",[""])[0], qs.get("wtype",[""])[0])); return
         m = re.match(r"^/projects/(\d+)$", rel)
         if m:
             html = _project_detail(sess, int(m.group(1)))
@@ -1758,6 +1800,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error":"No hay jornada activa en este proyecto"}); return
             run("UPDATE time_entries SET ended_at=datetime('now') WHERE id=?", (open_entry["id"],))
             self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/projects/(\d+)/time/log$", rel)
+        if m:
+            pid = int(m.group(1))
+            date_str = (data.get("date") or "").strip()
+            hours = float(data.get("hours") or 0)
+            if not date_str or hours <= 0:
+                self._json(400, {"error":"Fecha y horas requeridas"}); return
+            start_dt = datetime.fromisoformat(f"{date_str}T08:00:00")
+            end_dt   = start_dt + timedelta(hours=hours)
+            eid = run("""INSERT INTO time_entries (project_id,user_id,started_at,ended_at,entry_type,notes)
+                VALUES(?,?,?,?,?,?)""",
+                (pid, sess["id"],
+                 start_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                 end_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                 data.get("entry_type","work"), data.get("notes","")))
+            self._json(201, {"id":eid}); return
 
         # extras
         m = re.match(r"^/api/projects/(\d+)/extras$", rel)
