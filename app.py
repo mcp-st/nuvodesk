@@ -224,6 +224,15 @@ CREATE TABLE IF NOT EXISTS notifications (
     read       INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS project_audit (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    field      TEXT NOT NULL,
+    old_value  TEXT DEFAULT '',
+    new_value  TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 MIGRATIONS = [
@@ -235,6 +244,8 @@ MIGRATIONS = [
     "ALTER TABLE projects ADD COLUMN wo_status TEXT DEFAULT ''",
     "ALTER TABLE projects ADD COLUMN closed_at TEXT DEFAULT ''",
     "ALTER TABLE project_logs ADD COLUMN technicians INTEGER DEFAULT 1",
+    "ALTER TABLE projects ADD COLUMN lat REAL DEFAULT NULL",
+    "ALTER TABLE projects ADD COLUMN lng REAL DEFAULT NULL",
 ]
 
 def init_db():
@@ -417,6 +428,34 @@ def _project_detail(user, pid):
     desc_html = f'<p style="color:var(--muted);margin-bottom:16px;line-height:1.6">{_esc(p["description"])}</p>' if p.get('description') else ''
 
     # info tab content
+    audit_rows = rs(q("""SELECT pa.*,u.display_name uname FROM project_audit pa
+        JOIN users u ON u.id=pa.user_id WHERE pa.project_id=?
+        ORDER BY pa.created_at DESC LIMIT 50""", (pid,)))
+
+    _STATUS_LBL = {"active":"Activo","paused":"Pausado","completed":"Completado","cancelled":"Cancelado"}
+    _PRI_LBL    = {"low":"Baja","normal":"Normal","high":"Alta","urgent":"Urgente"}
+    def _audit_val(field, val):
+        if field == "status":   return _STATUS_LBL.get(val, val)
+        if field == "priority": return _PRI_LBL.get(val, val)
+        if field == "assigned_to":
+            if not val or val == "None": return "Sin asignar"
+            u = r2d(q1("SELECT display_name FROM users WHERE id=?", (int(val),)))
+            return u["display_name"] if u else val
+        return val or "—"
+    _FIELD_LBL = {"status":"Estado","priority":"Prioridad","assigned_to":"Técnico","due_date":"Fecha límite"}
+
+    audit_html = ""
+    if audit_rows:
+        items = ""
+        for a in audit_rows:
+            flbl = _FIELD_LBL.get(a["field"], a["field"])
+            items += (f'<li style="padding:8px 0;border-bottom:1px solid var(--border);font-size:.82rem">'
+                f'<span class="muted">{_esc(a["created_at"][:16])}</span>'
+                f' · <strong>{_esc(a["uname"])}</strong> cambió <em>{flbl}</em>'
+                f': <span class="muted">{_esc(_audit_val(a["field"],a["old_value"]))}</span>'
+                f' → <strong>{_esc(_audit_val(a["field"],a["new_value"]))}</strong></li>')
+        audit_html = f'<ul style="list-style:none;padding:0;margin:0">{items}</ul>'
+
     info_rows = ""
     info_fields = [("Referencia", p.get("reference","")), ("Cliente", p.get("client","")),
                    ("Dirección", p.get("address","")), ("Técnico responsable", p.get("tech","")),
@@ -725,6 +764,7 @@ def _project_detail(user, pid):
   </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap">
     <a href="{BP}/projects/{pid}/report" target="_blank" class="btn btn-ghost btn-sm">🖨 Informe</a>
+    <a href="{BP}/projects/{pid}/albaran" target="_blank" class="btn btn-ghost btn-sm">🧾 Albarán</a>
     <button class="btn btn-ghost btn-sm" onclick="openSigModal()">✍️ Firma cliente</button>
     <button class="btn btn-ghost btn-sm" onclick="editProject({_jattr(safe_proj)})">✏️ Editar</button>
   </div>
@@ -859,6 +899,7 @@ def _project_detail(user, pid):
 <div class="card">
   <table><tbody>{info_rows or "<tr><td class='muted'>Sin datos adicionales</td></tr>"}</tbody></table>
 </div>
+{f'<div class="card"><h3 style="margin-bottom:12px">Historial de cambios</h3>{audit_html}</div>' if audit_html else ""}
 </div>
 
 <!-- MODAL kit recomendación -->
@@ -948,7 +989,7 @@ def _project_detail(user, pid):
   </div>
   <div class="form-row">
     <div><label>Cliente</label><input id="f-client"></div>
-    <div><label>Dirección</label><input id="f-addr"></div>
+    <div><label>Dirección <button type="button" class="btn btn-ghost btn-icon" style="font-size:.72rem;margin-left:4px;vertical-align:middle" onclick="geocodeProjAddr()" title="Geolocalizar dirección">📍</button></label><input id="f-addr"></div>
   </div>
   <div class="form-row">
     <div><label>Contacto obra</label><input id="f-cname"></div>
@@ -1118,6 +1159,22 @@ function editProject(p){{
   document.getElementById('f-due').value=p.due_date||'';
   document.getElementById('f-hours').value=p.estimated_hours||0;
   document.getElementById('proj-modal').classList.add('open');
+}}
+function geocodeProjAddr(){{
+  var addr=document.getElementById('f-addr').value.trim();
+  if(!addr){{alert('Escribe primero una dirección');return;}}
+  fetch('https://nominatim.openstreetmap.org/search?q='+encodeURIComponent(addr)+'&format=json&limit=1',
+    {{headers:{{'Accept':'application/json','User-Agent':'NuvoDesk/1.0'}}}})
+    .then(function(r){{return r.json();}})
+    .then(function(d){{
+      if(!d.length){{alert('No se encontró: '+addr);return;}}
+      var projId=document.getElementById('f-id').value;
+      if(!projId){{alert('Guarda el proyecto primero para poder geolocalizarlo');return;}}
+      fetch(bp+'/api/projects/'+projId+'/geocode',{{method:'POST',
+        headers:{{'Content-Type':'application/json'}},
+        body:JSON.stringify({{lat:parseFloat(d[0].lat),lng:parseFloat(d[0].lon)}})}})
+        .then(function(r){{if(r.ok)alert('Ubicación guardada ✓');}});
+    }}).catch(function(){{alert('Error al geolocalizar');}});
 }}
 function closeProjModal(){{document.getElementById('proj-modal').classList.remove('open');}}
 document.getElementById('proj-modal').onclick=function(e){{if(e.target===this)closeProjModal();}};
@@ -1617,9 +1674,10 @@ function delKitRec(id){{
 from web.pages.inventory import _inventory_page
 from web.pages.kit import _kit_page
 from web.pages.users import _users_page
-from web.pages.reports import _project_report, _project_report_md
+from web.pages.reports import _project_report, _project_report_md, _project_albaran
 from web.pages.calendar import _calendar_page, _calendar_day
 from web.pages.workload import _workload_page
+from web.pages.map import _map_page
 def _body(h) -> dict:
     n = int(h.headers.get("Content-Length", 0))
     if not n: return {}
@@ -1761,6 +1819,8 @@ class Handler(BaseHTTPRequestHandler):
         if rel == "/workload":
             wk = qs.get("week",[""])[0]
             self._send(200, _workload_page(sess, wk)); return
+        if rel == "/map":
+            self._send(200, _map_page(sess)); return
         if rel == "/download":
             self._send(200, _download_page(sess)); return
 
@@ -1833,6 +1893,11 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/projects/(\d+)/report$", rel)
         if m:
             html = _project_report(sess, int(m.group(1)))
+            self._send(200 if html else 404, html or "Not found"); return
+
+        m = re.match(r"^/projects/(\d+)/albaran$", rel)
+        if m:
+            html = _project_albaran(sess, int(m.group(1)))
             self._send(200 if html else 404, html or "Not found"); return
 
         m = re.match(r"^/projects/(\d+)/report\.md$", rel)
@@ -1991,6 +2056,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as ex:
                 self._json(500, {"error": str(ex)})
             return
+
+        # project geocode
+        m = re.match(r"^/api/projects/(\d+)/geocode$", rel)
+        if m:
+            pid = int(m.group(1))
+            lat = data.get("lat"); lng = data.get("lng")
+            if lat is None or lng is None: self._json(400, {"error":"lat/lng requeridos"}); return
+            run("UPDATE projects SET lat=?,lng=? WHERE id=?", (float(lat), float(lng), pid))
+            self._json(200, {"ok":True}); return
 
         # project signature
         m = re.match(r"^/api/projects/(\d+)/signature$", rel)
@@ -2245,7 +2319,7 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/projects/(\d+)$", rel)
         if m:
             pid = int(m.group(1))
-            old = r2d(q1("SELECT status,assigned_to FROM projects WHERE id=?", (pid,))) or {}
+            old = r2d(q1("SELECT status,assigned_to,priority,due_date FROM projects WHERE id=?", (pid,))) or {}
             new_status = data.get("status","active")
             closing = (new_status == "completed" and old.get("status") != "completed")
             closed_sql = ",closed_at=datetime('now')" if closing else ""
@@ -2259,6 +2333,17 @@ class Handler(BaseHTTPRequestHandler):
                  data.get("start_date",""),data.get("due_date",""),
                  data.get("assigned_to") or None,
                  data.get("work_type","proyecto") or "proyecto", pid))
+            # audit trail
+            _audit_fields = {
+                "status": (old.get("status",""), new_status),
+                "priority": (old.get("priority",""), data.get("priority","normal")),
+                "assigned_to": (str(old.get("assigned_to") or ""), str(data.get("assigned_to") or "")),
+                "due_date": (old.get("due_date","") or "", data.get("due_date","") or ""),
+            }
+            for _f, (_ov, _nv) in _audit_fields.items():
+                if str(_ov) != str(_nv):
+                    run("INSERT INTO project_audit (project_id,user_id,field,old_value,new_value) VALUES(?,?,?,?,?)",
+                        (pid, sess["id"], _f, str(_ov), str(_nv)))
             # notify if assigned_to changed
             new_tech = data.get("assigned_to")
             if new_tech and str(new_tech) != str(old.get("assigned_to") or ""):

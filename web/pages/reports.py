@@ -179,6 +179,107 @@ body{{display:block;background:#f0f4f8}}
 </div>
 </body></html>"""
 
+def _project_albaran(user, pid):
+    p = r2d(q1("""SELECT p.*,u.display_name tech FROM projects p
+        LEFT JOIN users u ON u.id=p.assigned_to WHERE p.id=?""", (pid,)))
+    if not p: return None
+    tasks      = rs(q("SELECT * FROM tasks WHERE project_id=? ORDER BY status DESC", (pid,)))
+    equipment  = rs(q("SELECT * FROM equipment_items WHERE project_id=? ORDER BY created_at", (pid,)))
+    assignments= rs(q("""SELECT a.*,m.name mat_name,m.code mat_code,m.unit mat_unit
+        FROM assignments a JOIN materials m ON m.id=a.material_id
+        WHERE a.project_id=? AND a.qty_consumed>0 ORDER BY m.name""", (pid,)))
+    time_rows  = rs(q("""SELECT u.display_name uname,
+        COALESCE(SUM(CASE WHEN te.ended_at IS NOT NULL
+            THEN (julianday(te.ended_at)-julianday(te.started_at))*86400 ELSE 0 END),0) total_secs
+        FROM time_entries te JOIN users u ON u.id=te.user_id
+        WHERE te.project_id=? AND te.ended_at IS NOT NULL GROUP BY u.id""", (pid,)))
+    sig_file   = r2d(q1("""SELECT filename FROM project_files WHERE project_id=?
+        AND original_name='Firma cliente' ORDER BY created_at DESC LIMIT 1""", (pid,)))
+    now_str    = datetime.now().strftime("%d/%m/%Y %H:%M")
+    st_label   = {"active":"Activo","paused":"Pausado","completed":"Completado","cancelled":"Cancelado"}.get(p['status'], p['status'])
+    pri_label  = {"low":"Baja","normal":"Normal","high":"Alta","urgent":"Urgente"}.get(p['priority'], p['priority'])
+    task_done  = sum(1 for t in tasks if t['status']=='done')
+    total_h    = sum(r['total_secs'] for r in time_rows) / 3600
+
+    task_rows = "".join(
+        f"<tr><td style='padding:5px 8px;border-bottom:1px solid #eee'>"
+        f"{'✅' if t['status']=='done' else ('🔴' if t['status']=='blocked' else '⬜')} {_esc(t['title'])}</td>"
+        f"<td style='padding:5px 8px;border-bottom:1px solid #eee;color:#64748b;font-size:.82rem'>"
+        f"{'Hecho' if t['status']=='done' else ('Bloqueado' if t['status']=='blocked' else 'Pendiente')}"
+        f"</td></tr>" for t in tasks)
+
+    mat_rows = "".join(
+        f"<tr><td style='padding:5px 8px;border-bottom:1px solid #eee'>{_esc(a['mat_name'])}</td>"
+        f"<td style='padding:5px 8px;border-bottom:1px solid #eee;text-align:center'>{a['qty_consumed']}</td>"
+        f"<td style='padding:5px 8px;border-bottom:1px solid #eee'>{_esc(a['mat_unit'])}</td></tr>" for a in assignments)
+
+    eq_rows = "".join(
+        f"<tr><td style='padding:5px 8px;border-bottom:1px solid #eee'>{_esc(e.get('brand','') or '')}</td>"
+        f"<td style='padding:5px 8px;border-bottom:1px solid #eee'>{_esc(e['model'])}</td>"
+        f"<td style='padding:5px 8px;border-bottom:1px solid #eee;font-family:monospace;font-size:.8rem'>{_esc(e.get('serial_number','') or '')}</td>"
+        f"<td style='padding:5px 8px;border-bottom:1px solid #eee;text-align:center'>{e['quantity']}</td></tr>" for e in equipment)
+
+    time_rows_html = "".join(
+        f"<tr><td style='padding:5px 8px;border-bottom:1px solid #eee'>{_esc(r['uname'])}</td>"
+        f"<td style='padding:5px 8px;border-bottom:1px solid #eee;text-align:center'>{_fmt_duration(r['total_secs'])}</td></tr>" for r in time_rows)
+
+    sig_html = ""
+    if sig_file:
+        sig_url = f"{BP}/api/projects/{pid}/files/{sig_file['filename']}"
+        sig_html = f'<div style="margin-top:32px;padding-top:16px;border-top:2px solid #e2e8f0"><p style="color:#64748b;font-size:.82rem;margin-bottom:8px">Firma del cliente / Conforme</p><img src="{sig_url}" style="max-width:280px;border:1px solid #e2e8f0;border-radius:4px"></div>'
+
+    return f"""<!doctype html><html lang="es"><head><meta charset="utf-8">
+<title>Albarán — {_esc(p["name"])}</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:Arial,sans-serif;font-size:13px;color:#1e293b;background:#fff;padding:28px 36px}}
+h1{{font-size:1.3rem;margin-bottom:4px}}
+h2{{font-size:.95rem;font-weight:700;color:#1558c2;margin:18px 0 8px;text-transform:uppercase;letter-spacing:.04em}}
+table{{width:100%;border-collapse:collapse}}
+th{{text-align:left;padding:5px 8px;background:#f1f5f9;font-size:.8rem}}
+.hdr{{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:16px;border-bottom:2px solid #1558c2;margin-bottom:18px}}
+.logo{{text-align:right;font-size:.8rem;color:#64748b}}
+.logo strong{{display:block;font-size:1rem;color:#1558c2}}
+.meta{{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;margin-bottom:4px}}
+.meta span:nth-child(odd){{color:#64748b;font-size:.8rem}}
+.meta span:nth-child(even){{font-weight:600}}
+.kpi-row{{display:flex;gap:24px;margin:12px 0;padding:10px 16px;background:#f8fafc;border-radius:6px}}
+.kpi{{text-align:center}}.kpi .v{{font-size:1.3rem;font-weight:700;color:#1558c2}}.kpi .l{{font-size:.72rem;color:#64748b}}
+@media print{{body{{padding:12px 16px}}button{{display:none}}}}
+</style></head><body>
+<div style="display:flex;justify-content:flex-end;margin-bottom:12px;gap:8px">
+  <button onclick="window.print()" style="background:#1558c2;color:#fff;border:none;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:.82rem">🖨 Imprimir / PDF</button>
+</div>
+<div class="hdr">
+  <div>
+    <h1>{_esc(p["name"])}</h1>
+    <div style="color:#64748b;font-size:.82rem;margin-top:2px">Albarán de trabajo · {now_str}</div>
+    {f'<div style="margin-top:4px"><span style="background:#dcfce7;color:#15803d;border-radius:4px;padding:2px 8px;font-size:.75rem;font-weight:700">{st_label}</span></div>' if p['status'] else ''}
+  </div>
+  <div class="logo"><strong>Nuvolink · Telecoms</strong>NuvoDesk v3<br>Generado: {now_str}</div>
+</div>
+<div class="meta">
+  <span>Cliente</span><span>{_esc(p.get("client","") or "—")}</span>
+  <span>Referencia</span><span>{_esc(p.get("reference","") or "—")}</span>
+  <span>Dirección</span><span>{_esc(p.get("address","") or "—")}</span>
+  <span>Técnico</span><span>{_esc(p.get("tech","") or "—")}</span>
+  <span>Contacto</span><span>{_esc(p.get("contact_name","") or "—")}{(" · " + _esc(p.get("contact_phone","") or "")) if p.get("contact_phone") else ""}</span>
+  <span>Prioridad</span><span>{pri_label}</span>
+  <span>Fecha inicio</span><span>{_esc((p.get("start_date") or "—")[:10])}</span>
+  <span>Fecha límite</span><span>{_esc((p.get("due_date") or "—")[:10])}</span>
+</div>
+<div class="kpi-row">
+  <div class="kpi"><div class="v">{task_done}/{len(tasks)}</div><div class="l">Tareas completadas</div></div>
+  <div class="kpi"><div class="v">{round(total_h,1)}h</div><div class="l">Horas trabajadas</div></div>
+  <div class="kpi"><div class="v">{len(equipment)}</div><div class="l">Equipos instalados</div></div>
+</div>
+{"<h2>Tareas</h2><table><thead><tr><th>Tarea</th><th>Estado</th></tr></thead><tbody>" + task_rows + "</tbody></table>" if tasks else ""}
+{"<h2>Materiales consumidos</h2><table><thead><tr><th>Material</th><th style='text-align:center'>Cant.</th><th>Ud</th></tr></thead><tbody>" + mat_rows + "</tbody></table>" if mat_rows else ""}
+{"<h2>Equipos instalados</h2><table><thead><tr><th>Marca</th><th>Modelo</th><th>Nº Serie</th><th style='text-align:center'>Cant.</th></tr></thead><tbody>" + eq_rows + "</tbody></table>" if equipment else ""}
+{"<h2>Tiempos por técnico</h2><table><thead><tr><th>Técnico</th><th style='text-align:center'>Tiempo</th></tr></thead><tbody>" + time_rows_html + "</tbody></table>" if time_rows else ""}
+{sig_html}
+</body></html>"""
+
 def _project_report_md(user, pid):
     p = r2d(q1("""SELECT p.*,u.display_name tech FROM projects p
         LEFT JOIN users u ON u.id=p.assigned_to WHERE p.id=?""", (pid,)))

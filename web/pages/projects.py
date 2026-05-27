@@ -300,6 +300,14 @@ document.getElementById('proj-form').onsubmit=function(e){{
     .catch(function(err){{alert(err.message);}});
 }};
 {("(function(){var today=new Date().toISOString().slice(0,10);openNewProject();document.getElementById('f-wtype').value='averia';document.getElementById('f-priority').value='urgent';document.getElementById('f-start').value=today;document.getElementById('f-name').focus();})();" if new=="averia" else "")}
+var _CLOSING_CHECKS=[
+  'Prueba de conectividad realizada',
+  'Cables y puertos etiquetados',
+  'Documentación entregada al cliente',
+  'Área de trabajo limpia',
+  'Equipos instalados inventariados',
+  'Firma del cliente obtenida'
+];
 function showClosingModal(s){{
   var el=document.getElementById('closing-modal');
   var pct=s.tasks_total?Math.round(s.tasks_done/s.tasks_total*100):100;
@@ -309,26 +317,40 @@ function showClosingModal(s){{
   document.getElementById('cm-timer').textContent=s.hours_timer?s.hours_timer+'h':'—';
   document.getElementById('cm-logged').textContent=s.hours_logged?s.hours_logged+'h':'—';
   document.getElementById('cm-report').href=bp+'/projects/'+s.pid+'/report';
+  document.getElementById('cm-albaran').href=bp+'/projects/'+s.pid+'/albaran';
   document.getElementById('cm-view').href=bp+'/projects/'+s.pid;
+  var cl=document.getElementById('cm-checklist');
+  cl.innerHTML=_CLOSING_CHECKS.map(function(c,i){{
+    return '<label style="display:flex;align-items:center;gap:8px;font-size:.85rem;cursor:pointer">'
+      +'<input type="checkbox" id="cc-'+i+'" style="width:16px;height:16px;accent-color:var(--primary)">'
+      +'<span>'+c+'</span></label>';
+  }}).join('');
   el.classList.add('open');
 }}
 </script>
 
 <div class="modal-bg" id="closing-modal">
-<div class="modal" style="max-width:440px;text-align:center">
-  <div style="font-size:3rem;margin-bottom:8px">✅</div>
-  <h2 style="margin-bottom:4px">Proyecto completado</h2>
-  <p id="cm-name" style="color:var(--muted);font-size:.9rem;margin-bottom:20px"></p>
-  <div style="background:var(--surface2,var(--surface));border-radius:8px;padding:16px;text-align:left;margin-bottom:20px">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:.875rem">
+<div class="modal" style="max-width:480px">
+  <div style="text-align:center">
+    <div style="font-size:3rem;margin-bottom:8px">✅</div>
+    <h2 style="margin-bottom:4px">Proyecto completado</h2>
+    <p id="cm-name" style="color:var(--muted);font-size:.9rem;margin-bottom:16px"></p>
+  </div>
+  <div style="background:var(--surface2,var(--surface));border-radius:8px;padding:14px;margin-bottom:16px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;font-size:.875rem">
       <span style="color:var(--muted)">Tareas completadas</span><span id="cm-tasks" class="fw7"></span>
       <span style="color:var(--muted)">Horas estimadas</span><span id="cm-est" class="fw7"></span>
       <span style="color:var(--muted)">Horas (temporizador)</span><span id="cm-timer" class="fw7"></span>
       <span style="color:var(--muted)">Horas (diario)</span><span id="cm-logged" class="fw7"></span>
     </div>
   </div>
+  <div style="background:var(--surface2,var(--surface));border-radius:8px;padding:14px;margin-bottom:16px">
+    <div style="font-size:.8rem;font-weight:700;margin-bottom:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">✔ Checklist de cierre</div>
+    <div id="cm-checklist" style="display:flex;flex-direction:column;gap:6px"></div>
+  </div>
   <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
     <a id="cm-report" href="#" class="btn btn-primary" target="_blank">📄 Ver informe</a>
+    <a id="cm-albaran" href="#" class="btn btn-ghost" target="_blank">🧾 Albarán</a>
     <a id="cm-view" href="#" class="btn btn-ghost">→ Ir al proyecto</a>
     <button class="btn btn-ghost" onclick="document.getElementById('closing-modal').classList.remove('open');location.reload()">Cerrar</button>
   </div>
