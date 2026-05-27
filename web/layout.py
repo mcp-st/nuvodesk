@@ -149,6 +149,20 @@ function stopTimerGlobal(pid){{
     </div>
     {timer_widget}
     <div class="sidebar-footer">
+      <button class="notif-btn" id="notifBtn" onclick="toggleNotifPanel()" aria-label="Notificaciones" style="display:flex;align-items:center;gap:8px;width:100%;padding:8px 10px;background:none;border:none;cursor:pointer;color:var(--text);border-radius:6px;position:relative;margin-bottom:4px">
+        <span style="position:relative;display:inline-flex">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          <span id="notif-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:var(--red,#dc2626);color:#fff;border-radius:50%;font-size:.6rem;width:16px;height:16px;align-items:center;justify-content:center;font-weight:700"></span>
+        </span>
+        <span class="nav-item-label">Notificaciones</span>
+      </button>
+      <div id="notif-panel" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;max-height:280px;overflow-y:auto;box-shadow:0 4px 16px rgba(0,0,0,.12)">
+        <div style="padding:8px 12px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+          <span style="font-size:.8rem;font-weight:600">Notificaciones</span>
+          <button onclick="markAllNotifRead()" style="background:none;border:none;font-size:.75rem;color:var(--primary);cursor:pointer">Marcar todas leídas</button>
+        </div>
+        <div id="notif-list" style="padding:4px 0"></div>
+      </div>
       <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" aria-label="Cambiar tema">
         <span class="nav-item-icon" aria-hidden="true">
           <svg class="icon" id="themeIcon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></svg>
@@ -244,7 +258,56 @@ function _renderSearch(results){{
 document.addEventListener('click',function(e){{
   if(!e.target.closest('.sidebar-search'))
     document.getElementById('search-results').classList.remove('open');
+  if(!e.target.closest('#notifBtn')&&!e.target.closest('#notif-panel'))
+    document.getElementById('notif-panel').style.display='none';
 }});
+function toggleNotifPanel(){{
+  var p=document.getElementById('notif-panel');
+  if(p.style.display==='none'){{
+    p.style.display='block';
+    loadNotifications();
+  }} else {{ p.style.display='none'; }}
+}}
+function loadNotifications(){{
+  fetch(bp+'/api/notifications')
+    .then(function(r){{return r.json();}})
+    .then(function(d){{
+      var badge=document.getElementById('notif-badge');
+      if(d.unread>0){{badge.style.display='flex';badge.textContent=d.unread>9?'9+':d.unread;}}
+      else badge.style.display='none';
+      var list=document.getElementById('notif-list');
+      if(!d.notifications.length){{
+        list.innerHTML='<div style="padding:16px;text-align:center;font-size:.82rem;color:#94a3b8">Sin notificaciones</div>';
+        return;
+      }}
+      list.innerHTML=d.notifications.map(function(n){{
+        var unreadStyle=n.read?'':'background:color-mix(in srgb,var(--primary) 8%,transparent)';
+        return '<a href="'+(n.url||'#')+'" onclick="markNotifRead('+n.id+')" '
+          +'style="display:block;padding:10px 14px;border-bottom:1px solid var(--border);text-decoration:none;color:var(--text);'+unreadStyle+'">'
+          +'<div style="font-size:.8rem;font-weight:600">'+n.title.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</div>'
+          +'<div style="font-size:.75rem;color:var(--muted)">'+n.body.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</div>'
+          +'<div style="font-size:.7rem;color:var(--muted);margin-top:2px">'+n.created_at.slice(0,16)+'</div>'
+          +'</a>';
+      }}).join('');
+    }});
+}}
+function markNotifRead(id){{
+  fetch(bp+'/api/notifications/'+id+'/read',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:'{{}}'}});
+}}
+function markAllNotifRead(){{
+  fetch(bp+'/api/notifications/read_all',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:'{{}}'}})
+    .then(function(){{loadNotifications();}});
+}}
+(function(){{
+  fetch(bp+'/api/notifications')
+    .then(function(r){{return r.json();}})
+    .then(function(d){{
+      if(d.unread>0){{
+        var b=document.getElementById('notif-badge');
+        b.style.display='flex'; b.textContent=d.unread>9?'9+':d.unread;
+      }}
+    }}).catch(function(){{}});
+}})();
 </script>
 </body>
 </html>"""

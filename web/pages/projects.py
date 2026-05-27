@@ -380,6 +380,10 @@ def _build_kanban(tasks, pid):
                 f'{due_html}'
                 f'<button class="btn btn-ghost btn-icon" style="margin-left:auto;font-size:.75rem" '
                 f'onclick="openChecklist({t["id"]},{json.dumps(t["title"])})">☑</button>'
+                f'<button class="btn btn-ghost btn-icon" style="font-size:.75rem;position:relative" '
+                f'onclick="openTaskPhotos({t["id"]},{json.dumps(t["title"])})">📷'
+                + (f'<span style="position:absolute;top:-2px;right:-2px;background:var(--primary);color:#fff;border-radius:50%;font-size:.55rem;width:14px;height:14px;display:flex;align-items:center;justify-content:center;line-height:1">{t["photo_count"]}</span>' if t.get("photo_count") else "")
+                + '</button>'
                 f'<button class="btn btn-ghost btn-icon" style="font-size:.75rem" '
                 f'onclick="editTask({json.dumps(dict(t))})">✏️</button>'
                 f'<button class="btn btn-danger btn-icon" style="font-size:.75rem" '

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """NuvoDesk v3 — Nuvolink field project & materials management."""
 
-import os, json, sqlite3, re, calendar as _cal, mimetypes
+import os, json, sqlite3, re, calendar as _cal, mimetypes, secrets, base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote_plus
 from datetime import datetime, date as _date, timedelta
@@ -206,6 +206,24 @@ CREATE TABLE IF NOT EXISTS project_kit (
     status      TEXT NOT NULL DEFAULT 'pending',
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS task_photos (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id       INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    filename      TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    uploaded_by   INTEGER REFERENCES users(id),
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS notifications (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title      TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    url        TEXT DEFAULT '',
+    read       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 MIGRATIONS = [
@@ -249,7 +267,8 @@ def _project_detail(user, pid):
 
     tasks = rs(q("""SELECT t.*,
         (SELECT COUNT(*) FROM task_checklist c WHERE c.task_id=t.id) cl_t,
-        (SELECT COUNT(*) FROM task_checklist c WHERE c.task_id=t.id AND c.done=1) cl_d
+        (SELECT COUNT(*) FROM task_checklist c WHERE c.task_id=t.id AND c.done=1) cl_d,
+        (SELECT COUNT(*) FROM task_photos tp WHERE tp.task_id=t.id) photo_count
         FROM tasks t WHERE t.project_id=?
         ORDER BY CASE t.status WHEN 'blocked' THEN 0 WHEN 'in_progress' THEN 1
           WHEN 'pending' THEN 2 ELSE 3 END, t.priority DESC""", (pid,)))
@@ -706,6 +725,7 @@ def _project_detail(user, pid):
   </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap">
     <a href="{BP}/projects/{pid}/report" target="_blank" class="btn btn-ghost btn-sm">🖨 Informe</a>
+    <button class="btn btn-ghost btn-sm" onclick="openSigModal()">✍️ Firma cliente</button>
     <button class="btn btn-ghost btn-sm" onclick="editProject({_jattr(safe_proj)})">✏️ Editar</button>
   </div>
 </div>
@@ -1036,6 +1056,38 @@ def _project_detail(user, pid):
     <button type="submit" class="btn btn-primary">Guardar</button>
   </div>
   </form>
+</div></div>
+
+<!-- MODAL fotos tarea -->
+<div class="modal-bg" id="photo-modal">
+<div class="modal" style="max-width:560px">
+  <h2 id="photo-modal-title">📷 Fotos</h2>
+  <div id="photo-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;margin-bottom:16px;min-height:60px"></div>
+  <label style="display:flex;align-items:center;gap:10px;cursor:pointer;background:var(--surface2,var(--surface));border:2px dashed var(--border);border-radius:8px;padding:12px;justify-content:center">
+    <input type="file" id="photo-input" accept="image/*" capture="environment" multiple style="display:none" onchange="uploadTaskPhotos(this.files)">
+    <span style="font-size:1.5rem">📷</span>
+    <span style="font-size:.875rem;color:var(--muted)">Tomar foto o seleccionar imágenes</span>
+  </label>
+  <div class="modal-foot" style="margin-top:12px">
+    <button type="button" class="btn btn-ghost" onclick="closePhotoModal()">Cerrar</button>
+  </div>
+</div></div>
+
+<!-- MODAL firma cliente -->
+<div class="modal-bg" id="sig-modal">
+<div class="modal" style="max-width:500px">
+  <h2>✍️ Firma del cliente</h2>
+  <p class="muted" style="font-size:.875rem;margin-bottom:12px">El cliente firma en el recuadro para confirmar la entrega del trabajo</p>
+  <canvas id="sig-canvas" width="460" height="180"
+    style="border:2px solid var(--border);border-radius:8px;touch-action:none;cursor:crosshair;background:#fff;width:100%;max-width:460px;display:block"></canvas>
+  <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+    <button class="btn btn-ghost btn-sm" onclick="clearSignature()">Borrar</button>
+    <span class="muted" style="font-size:.78rem;align-self:center">Firma con el dedo o ratón</span>
+  </div>
+  <div class="modal-foot">
+    <button type="button" class="btn btn-ghost" onclick="closeSigModal()">Cancelar</button>
+    <button type="button" class="btn btn-primary" onclick="saveSignature()">Guardar firma</button>
+  </div>
 </div></div>
 
 <script>
@@ -1395,6 +1447,82 @@ function addManualLog(){{
     .catch(function(err){{alert(err.message);}});
 }}
 
+// ── task photos ──
+var _photoTaskId=null;
+function openTaskPhotos(taskId, title){{
+  _photoTaskId=taskId;
+  document.getElementById('photo-modal-title').textContent='📷 '+title;
+  document.getElementById('photo-input').value='';
+  loadTaskPhotos(taskId);
+  document.getElementById('photo-modal').classList.add('open');
+}}
+function closePhotoModal(){{document.getElementById('photo-modal').classList.remove('open');}}
+document.getElementById('photo-modal').onclick=function(e){{if(e.target===this)closePhotoModal();}};
+function loadTaskPhotos(taskId){{
+  fetch(bp+'/api/tasks/'+taskId+'/photos')
+    .then(function(r){{return r.json();}})
+    .then(function(photos){{
+      var grid=document.getElementById('photo-grid');
+      if(!photos.length){{grid.innerHTML='<p class="muted" style="grid-column:1/-1;text-align:center;padding:16px;font-size:.85rem">Sin fotos todavía</p>';return;}}
+      grid.innerHTML=photos.map(function(ph){{
+        return '<div style="position:relative;aspect-ratio:1;overflow:hidden;border-radius:6px;background:#000">'
+          +'<img src="'+bp+'/api/tasks/'+taskId+'/photos/'+ph.filename+'" '
+          +'style="width:100%;height:100%;object-fit:cover" loading="lazy">'
+          +'<button onclick="delTaskPhoto('+ph.id+')" style="position:absolute;top:3px;right:3px;background:rgba(0,0,0,.6);color:#fff;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:.7rem;display:flex;align-items:center;justify-content:center">✕</button>'
+          +'</div>';
+      }}).join('');
+    }});
+}}
+function uploadTaskPhotos(files){{
+  if(!files.length) return;
+  var fd=new FormData();
+  Array.from(files).forEach(function(f){{fd.append('photo',f);}});
+  fetch(bp+'/api/tasks/'+_photoTaskId+'/photos',{{method:'POST',body:fd}})
+    .then(function(r){{if(r.ok){{loadTaskPhotos(_photoTaskId);location.reload();}}
+      else r.json().then(function(j){{alert(j.error||'Error');}});}});
+}}
+function delTaskPhoto(id){{
+  if(!confirm('¿Eliminar esta foto?')) return;
+  fetch(bp+'/api/task_photos/'+id,{{method:'DELETE'}})
+    .then(function(r){{if(r.ok)loadTaskPhotos(_photoTaskId);}});
+}}
+
+// ── signature ──
+var _sigDrawing=false, _sigCtx=null, _sigHasMark=false;
+function openSigModal(){{
+  document.getElementById('sig-modal').classList.add('open');
+  var c=document.getElementById('sig-canvas');
+  _sigCtx=c.getContext('2d');
+  _sigCtx.clearRect(0,0,c.width,c.height);
+  _sigHasMark=false;
+  _sigCtx.strokeStyle='#1558c2'; _sigCtx.lineWidth=2.5; _sigCtx.lineCap='round'; _sigCtx.lineJoin='round';
+  function pos(e){{
+    var r=c.getBoundingClientRect();
+    var scaleX=c.width/r.width, scaleY=c.height/r.height;
+    var src=e.touches?e.touches[0]:e;
+    return {{x:(src.clientX-r.left)*scaleX, y:(src.clientY-r.top)*scaleY}};
+  }}
+  c.onmousedown=c.ontouchstart=function(e){{e.preventDefault();_sigDrawing=true;var p=pos(e);_sigCtx.beginPath();_sigCtx.moveTo(p.x,p.y);}};
+  c.onmousemove=c.ontouchmove=function(e){{e.preventDefault();if(!_sigDrawing)return;var p=pos(e);_sigCtx.lineTo(p.x,p.y);_sigCtx.stroke();_sigHasMark=true;}};
+  c.onmouseup=c.ontouchend=function(){{_sigDrawing=false;}};
+}}
+function clearSignature(){{
+  var c=document.getElementById('sig-canvas');
+  _sigCtx.clearRect(0,0,c.width,c.height);
+  _sigHasMark=false;
+}}
+function closeSigModal(){{document.getElementById('sig-modal').classList.remove('open');}}
+document.getElementById('sig-modal').onclick=function(e){{if(e.target===this)closeSigModal();}};
+function saveSignature(){{
+  if(!_sigHasMark){{alert('Por favor dibuja la firma antes de guardar');return;}}
+  var dataUrl=document.getElementById('sig-canvas').toDataURL('image/png');
+  fetch(bp+'/api/projects/'+pid+'/signature',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{image:dataUrl}})}})
+    .then(function(r){{return r.ok?r.json():r.json().then(function(j){{throw new Error(j.error||'Error');}});}})
+    .then(function(){{closeSigModal();alert('Firma guardada correctamente');location.reload();}})
+    .catch(function(err){{alert(err.message);}});
+}}
+
 // ── extras ──
 function addExtra(){{
   var desc=document.getElementById('ex-desc').value.trim();
@@ -1646,6 +1774,25 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             self._json(200, rs(q("SELECT * FROM task_checklist WHERE task_id=? ORDER BY pos,id",
                                  (int(m.group(1)),)))); return
+        m = re.match(r"^/api/tasks/(\d+)/photos$", rel)
+        if m:
+            tid = int(m.group(1))
+            self._json(200, rs(q("SELECT * FROM task_photos WHERE task_id=? ORDER BY created_at DESC", (tid,)))); return
+        if rel == "/api/notifications":
+            notifs = rs(q("SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 30", (sess["id"],)))
+            unread = q1("SELECT COUNT(*) FROM notifications WHERE user_id=? AND read=0", (sess["id"],))[0]
+            self._json(200, {"notifications": notifs, "unread": unread}); return
+        m = re.match(r"^/api/tasks/(\d+)/photos/(.+)$", rel)
+        if m:
+            tid, fname = int(m.group(1)), m.group(2)
+            tp = r2d(q1("SELECT * FROM task_photos WHERE task_id=? AND filename=?", (tid, fname)))
+            if not tp: self._send(404, "Not found"); return
+            task_row = r2d(q1("SELECT project_id FROM tasks WHERE id=?", (tid,)))
+            if not task_row: self._send(404, "Not found"); return
+            fpath = os.path.join(FILES_DIR, str(task_row["project_id"]), "tasks", fname)
+            if not os.path.exists(fpath): self._send(404, "Not found"); return
+            with open(fpath,'rb') as fp: fdata = fp.read()
+            self._send(200, fdata, "image/jpeg", {"Content-Disposition":"inline"}); return
         if rel == "/api/materials":
             self._json(200, rs(q("SELECT * FROM materials ORDER BY name"))); return
         m = re.match(r"^/api/projects/(\d+)/members$", rel)
@@ -1817,6 +1964,59 @@ class Handler(BaseHTTPRequestHandler):
                  end_dt.strftime("%Y-%m-%d %H:%M:%S"),
                  data.get("entry_type","work"), data.get("notes","")))
             self._json(201, {"id":eid}); return
+
+        # task photos upload
+        m = re.match(r"^/api/tasks/(\d+)/photos$", rel)
+        if m:
+            tid = int(m.group(1))
+            task_row = r2d(q1("SELECT project_id FROM tasks WHERE id=?", (tid,)))
+            if not task_row: self._json(404, {"error":"Tarea no encontrada"}); return
+            proj_id = task_row["project_id"]
+            try:
+                _, files = _parse_multipart(self)
+                if not files: self._json(400, {"error":"Sin archivos"}); return
+                task_dir = os.path.join(FILES_DIR, str(proj_id), "tasks")
+                os.makedirs(task_dir, exist_ok=True)
+                saved = []
+                for _, fobj in files.items():
+                    orig = fobj.get('filename') or 'foto.jpg'
+                    safe = re.sub(r'[^\w\.\-]', '_', orig)[:120]
+                    stored = f"{secrets.token_hex(8)}_{safe}"
+                    with open(os.path.join(task_dir, stored), 'wb') as fp:
+                        fp.write(fobj['data'])
+                    pid2 = run("INSERT INTO task_photos (task_id,project_id,filename,original_name,uploaded_by) VALUES(?,?,?,?,?)",
+                               (tid, proj_id, stored, orig, sess["id"]))
+                    saved.append(pid2)
+                self._json(201, {"ids": saved})
+            except Exception as ex:
+                self._json(500, {"error": str(ex)})
+            return
+
+        # project signature
+        m = re.match(r"^/api/projects/(\d+)/signature$", rel)
+        if m:
+            pid = int(m.group(1))
+            img_data = (data.get("image") or "")
+            if not img_data.startswith("data:image/"): self._json(400, {"error":"Imagen inválida"}); return
+            header, b64 = img_data.split(",", 1)
+            raw = base64.b64decode(b64)
+            proj_dir = os.path.join(FILES_DIR, str(pid))
+            os.makedirs(proj_dir, exist_ok=True)
+            filename = f"firma_cliente_{_date.today().isoformat()}.png"
+            with open(os.path.join(proj_dir, filename), 'wb') as fp:
+                fp.write(raw)
+            run("INSERT OR REPLACE INTO project_files (project_id,filename,original_name,mimetype,size_bytes,uploaded_by,notes) VALUES(?,?,?,?,?,?,?)",
+                (pid, filename, "Firma cliente", "image/png", len(raw), sess["id"], "Firma digital del cliente"))
+            self._json(200, {"ok": True}); return
+
+        # notifications mark read
+        if rel == "/api/notifications/read_all":
+            run("UPDATE notifications SET read=1 WHERE user_id=?", (sess["id"],))
+            self._json(200, {"ok":True}); return
+        m = re.match(r"^/api/notifications/(\d+)/read$", rel)
+        if m:
+            run("UPDATE notifications SET read=1 WHERE id=? AND user_id=?", (int(m.group(1)), sess["id"]))
+            self._json(200, {"ok":True}); return
 
         # extras
         m = re.match(r"^/api/projects/(\d+)/extras$", rel)
@@ -2045,7 +2245,7 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/projects/(\d+)$", rel)
         if m:
             pid = int(m.group(1))
-            old = r2d(q1("SELECT status FROM projects WHERE id=?", (pid,))) or {}
+            old = r2d(q1("SELECT status,assigned_to FROM projects WHERE id=?", (pid,))) or {}
             new_status = data.get("status","active")
             closing = (new_status == "completed" and old.get("status") != "completed")
             closed_sql = ",closed_at=datetime('now')" if closing else ""
@@ -2059,6 +2259,13 @@ class Handler(BaseHTTPRequestHandler):
                  data.get("start_date",""),data.get("due_date",""),
                  data.get("assigned_to") or None,
                  data.get("work_type","proyecto") or "proyecto", pid))
+            # notify if assigned_to changed
+            new_tech = data.get("assigned_to")
+            if new_tech and str(new_tech) != str(old.get("assigned_to") or ""):
+                run("INSERT INTO notifications (user_id,title,body,url) VALUES(?,?,?,?)",
+                    (int(new_tech), "Nuevo proyecto asignado",
+                     f"{data.get('name','')} — {data.get('client','')}",
+                     f"{BP}/projects/{pid}"))
             resp = {"ok": True}
             if closing:
                 t_row = q1("SELECT COUNT(*) t, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) d FROM tasks WHERE project_id=?", (pid,))
@@ -2209,6 +2416,16 @@ class Handler(BaseHTTPRequestHandler):
             te = r2d(q1("SELECT * FROM time_entries WHERE id=?", (eid,)))
             if te and (te['user_id'] == sess['id'] or sess.get('role') == 'admin'):
                 run("DELETE FROM time_entries WHERE id=?", (eid,))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/task_photos/(\d+)$", rel)
+        if m:
+            tp = r2d(q1("SELECT * FROM task_photos WHERE id=?", (int(m.group(1)),)))
+            if tp:
+                fpath = os.path.join(FILES_DIR, str(tp['project_id']), "tasks", tp['filename'])
+                try: os.remove(fpath)
+                except: pass
+                run("DELETE FROM task_photos WHERE id=?", (int(m.group(1)),))
             self._json(200, {"ok":True}); return
 
         m = re.match(r"^/api/wo_extras/(\d+)$", rel)

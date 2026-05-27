@@ -138,6 +138,10 @@ button{font-family:inherit;cursor:pointer}
   50%{box-shadow:0 0 0 5px color-mix(in srgb,var(--green,#15803d) 0%,transparent)}
 }
 
+.notif-btn{border-radius:8px;transition:background var(--t-fast)}
+.notif-btn:hover{background:var(--surface2,rgba(100,116,139,.1))!important}
+#notif-badge{display:flex}
+
 /* sidebar footer */
 .sidebar-footer{border-top:1px solid var(--border);padding:10px 8px;
   display:flex;flex-direction:column;gap:4px;flex-shrink:0}
