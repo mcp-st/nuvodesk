@@ -260,9 +260,47 @@ document.getElementById('proj-form').onsubmit=function(e){{
     assigned_to:document.getElementById('f-tech').value||null}};
   fetch(id?bp+'/api/projects/'+id:bp+'/api/projects',
     {{method:id?'PUT':'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
-    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+    .then(function(r){{return r.ok?r.json():r.json().then(function(j){{throw new Error(j.error||'Error');}});}})
+    .then(function(j){{
+      closeProjModal();
+      if(j.closing_summary){{ showClosingModal(j.closing_summary); }}
+      else{{ location.reload(); }}
+    }})
+    .catch(function(err){{alert(err.message);}});
 }};
-</script>"""
+function showClosingModal(s){{
+  var el=document.getElementById('closing-modal');
+  var pct=s.tasks_total?Math.round(s.tasks_done/s.tasks_total*100):100;
+  document.getElementById('cm-name').textContent=s.name;
+  document.getElementById('cm-tasks').textContent=s.tasks_done+'/'+s.tasks_total+' ('+pct+'%)';
+  document.getElementById('cm-est').textContent=s.hours_estimated?s.hours_estimated+'h':'—';
+  document.getElementById('cm-timer').textContent=s.hours_timer?s.hours_timer+'h':'—';
+  document.getElementById('cm-logged').textContent=s.hours_logged?s.hours_logged+'h':'—';
+  document.getElementById('cm-report').href=bp+'/projects/'+s.pid+'/report';
+  document.getElementById('cm-view').href=bp+'/projects/'+s.pid;
+  el.classList.add('open');
+}}
+</script>
+
+<div class="modal-bg" id="closing-modal">
+<div class="modal" style="max-width:440px;text-align:center">
+  <div style="font-size:3rem;margin-bottom:8px">✅</div>
+  <h2 style="margin-bottom:4px">Proyecto completado</h2>
+  <p id="cm-name" style="color:var(--muted);font-size:.9rem;margin-bottom:20px"></p>
+  <div style="background:var(--surface2,var(--surface));border-radius:8px;padding:16px;text-align:left;margin-bottom:20px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:.875rem">
+      <span style="color:var(--muted)">Tareas completadas</span><span id="cm-tasks" class="fw7"></span>
+      <span style="color:var(--muted)">Horas estimadas</span><span id="cm-est" class="fw7"></span>
+      <span style="color:var(--muted)">Horas (temporizador)</span><span id="cm-timer" class="fw7"></span>
+      <span style="color:var(--muted)">Horas (diario)</span><span id="cm-logged" class="fw7"></span>
+    </div>
+  </div>
+  <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+    <a id="cm-report" href="#" class="btn btn-primary" target="_blank">📄 Ver informe</a>
+    <a id="cm-view" href="#" class="btn btn-ghost">→ Ir al proyecto</a>
+    <button class="btn btn-ghost" onclick="document.getElementById('closing-modal').classList.remove('open');location.reload()">Cerrar</button>
+  </div>
+</div></div>"""
     return _shell("projects", user, content)
 
 
