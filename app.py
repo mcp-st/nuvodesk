@@ -2453,7 +2453,9 @@ class Handler(BaseHTTPRequestHandler):
             resp = {"id": uid, "welcome_sent": False}
             if token and data.get("send_welcome") and email:
                 from core.email_templates import tpl_welcome
-                set_pw_url = f"{BP}/set-password?token={token}"
+                _proto = self.headers.get("X-Forwarded-Proto", "https")
+                _host  = self.headers.get("Host", "localhost")
+                set_pw_url = f"{_proto}://{_host}{BP}/set-password?token={token}"
                 subj, html = tpl_welcome(dn, un, set_pw_url)
                 werr = send_email(email, subj, html)
                 if werr:
@@ -2694,8 +2696,30 @@ class Handler(BaseHTTPRequestHandler):
             if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
             uid = int(m.group(1))
             if uid == sess["id"]: self._json(400, {"error":"No puedes eliminarte a ti mismo"}); return
-            run("DELETE FROM users WHERE id=?", (uid,))
-            self._json(200, {"ok":True}); return
+            # nullify nullable FK references before deleting
+            for tbl_col in [("projects","assigned_to"),("projects","created_by"),
+                            ("tasks","assigned_to"),("tasks","created_by"),
+                            ("project_files","uploaded_by"),("task_photos","uploaded_by"),
+                            ("assignments","added_by"),("tech_kit_assignments","added_by"),
+                            ("notifications","user_id")]:
+                try:
+                    run(f"UPDATE {tbl_col[0]} SET {tbl_col[1]}=NULL WHERE {tbl_col[1]}=?", (uid,))
+                except Exception:
+                    pass
+            # delete NOT NULL FK rows (cascade-like)
+            for tbl_col in [("project_members","user_id"),("tech_kit","user_id"),
+                            ("schedule_slots","user_id"),("time_entries","user_id"),
+                            ("notifications","user_id")]:
+                try:
+                    run(f"DELETE FROM {tbl_col[0]} WHERE {tbl_col[1]}=?", (uid,))
+                except Exception:
+                    pass
+            try:
+                run("DELETE FROM users WHERE id=?", (uid,))
+                self._json(200, {"ok":True})
+            except Exception as ex:
+                self._json(400, {"error": f"No se puede eliminar: {ex}. Desactiva el usuario en su lugar."})
+            return
 
         m = re.match(r"^/api/schedule_slots/(\d+)$", rel)
         if m:

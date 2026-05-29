@@ -45,6 +45,8 @@ def _shell(page, user, content, extra_head=""):
         ("settings",  f"{bp}/settings",  "Configuración"),
         ("download",  f"{bp}/download",  "App móvil"),
     ]
+    _BOTTOM_NAV_KEYS = {"dashboard", "projects", "calendar", "inventory", "workload"}
+
     sidebar_links = ""
     bottom_links = ""
     for key, url, label in nav:
@@ -59,12 +61,13 @@ def _shell(page, user, content, extra_head=""):
             f'<span class="nav-item-label">{label}</span>'
             f'</a>\n'
         )
-        bottom_links += (
-            f'<a href="{url}" class="{active.strip()}"{aria}>'
-            f'<span class="nav-item-icon" aria-hidden="true">{ic}</span>'
-            f'<span>{label}</span>'
-            f'</a>\n'
-        )
+        if key in _BOTTOM_NAV_KEYS:
+            bottom_links += (
+                f'<a href="{url}" class="{active.strip()}"{aria}>'
+                f'<span class="nav-item-icon" aria-hidden="true">{ic}</span>'
+                f'<span>{label}</span>'
+                f'</a>\n'
+            )
 
     role_lbl = {"admin":"Admin","technician":"Técnico","backoffice":"Backoffice"}.get(
         user.get("role",""), user.get("role",""))

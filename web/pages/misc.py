@@ -14,8 +14,8 @@ _BRAND_SVG = (
 )
 
 _LOGIN_CSS = """
-body{display:flex;align-items:center;justify-content:center;min-height:100dvh;background:var(--bg)}
-.login-wrap{display:flex;width:min(900px,98vw);min-height:520px;border-radius:20px;overflow:hidden;
+body{display:flex;align-items:center;justify-content:center;min-height:100dvh;background:var(--bg);padding:16px;box-sizing:border-box}
+.login-wrap{display:flex;width:min(900px,100%);min-height:520px;border-radius:20px;overflow:hidden;
   box-shadow:var(--shadow-lg);border:1px solid var(--border)}
 .login-brand{
   flex:1;background:linear-gradient(145deg,#06101f 0%,#0c1f3d 55%,#0a2e56 100%);
@@ -58,10 +58,10 @@ body{display:flex;align-items:center;justify-content:center;min-height:100dvh;ba
 .login-form-side .field label{display:block;font-size:.8rem;font-weight:600;color:var(--text);margin-bottom:6px}
 .login-form-side .field input{width:100%;box-sizing:border-box}
 .login-form-side .btn-primary{width:100%;justify-content:center;margin-top:6px}
-@media(max-width:600px){
+@media(max-width:640px){
   .login-brand{display:none}
-  .login-wrap{width:95vw;min-height:auto;border-radius:16px}
-  .login-form-side{width:100%;padding:36px 28px}
+  .login-wrap{min-height:auto;border-radius:16px;width:100%}
+  .login-form-side{width:100%;padding:40px 28px}
 }
 """
 import os, json, re, mimetypes, calendar as _cal

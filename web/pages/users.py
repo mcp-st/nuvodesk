@@ -72,11 +72,18 @@ def _users_page(user):
       </label>
       <input type="password" id="u-pw" autocomplete="new-password">
     </div>
+    <div>
+      <label>Repetir contraseña</label>
+      <input type="password" id="u-pw2" autocomplete="new-password">
+    </div>
+  </div>
+  <div class="form-row">
     <div><label>Rol</label><select id="u-role">
       <option value="technician">Técnico</option>
       <option value="backoffice">Backoffice</option>
       <option value="admin">Administrador</option>
     </select></div>
+    <div></div>
   </div>
   <div class="form-row">
     <div><label>Activo</label>
@@ -99,6 +106,17 @@ def _users_page(user):
   </form>
 </div></div>
 
+<div class="modal-bg" id="del-confirm-modal">
+<div class="modal" style="max-width:380px;text-align:center">
+  <div style="font-size:2rem;margin-bottom:12px">⚠️</div>
+  <h2 style="margin-bottom:8px">¿Eliminar usuario?</h2>
+  <p class="muted" style="margin-bottom:24px;font-size:.88rem">Esta acción no se puede deshacer.</p>
+  <div style="display:flex;gap:10px;justify-content:center">
+    <button id="del-confirm-cancel" class="btn btn-ghost">Cancelar</button>
+    <button id="del-confirm-ok" class="btn btn-danger">Eliminar</button>
+  </div>
+</div></div>
+
 <script>
 var bp={json.dumps(BP)};
 var _editingUser=false;
@@ -116,7 +134,7 @@ function openNewUser(){{
   _editingUser=false;
   document.getElementById('user-modal-title').textContent='Nuevo usuario';
   document.getElementById('user-id').value='';
-  ['firstname','lastname','phone','ext','username','pw','email'].forEach(function(f){{
+  ['firstname','lastname','phone','ext','username','pw','pw2','email'].forEach(function(f){{
     document.getElementById('u-'+f).value='';
   }});
   document.getElementById('u-pw-hint').style.display='inline';
@@ -138,6 +156,7 @@ function editUser(u){{
   document.getElementById('u-ext').value=u.extension||'';
   document.getElementById('u-username').value=u.username||'';
   document.getElementById('u-pw').value='';
+  document.getElementById('u-pw2').value='';
   document.getElementById('u-pw-hint').style.display='none';
   document.getElementById('u-pw-hint-edit').style.display='inline';
   document.getElementById('u-email').value=u.email||'';
@@ -154,6 +173,14 @@ document.getElementById('user-form').onsubmit=function(e){{
   var id=document.getElementById('user-id').value;
   var fn=document.getElementById('u-firstname').value.trim();
   var ln=document.getElementById('u-lastname').value.trim();
+  var pw=document.getElementById('u-pw').value;
+  var pw2=document.getElementById('u-pw2').value;
+  if(pw && pw!==pw2){{
+    document.getElementById('u-pw2').setCustomValidity('Las contraseñas no coinciden');
+    document.getElementById('u-pw2').reportValidity();
+    return;
+  }}
+  document.getElementById('u-pw2').setCustomValidity('');
   var d={{
     first_name:fn, last_name:ln,
     display_name:(fn+(ln?' '+ln:'')).trim()||fn,
@@ -166,7 +193,6 @@ document.getElementById('user-form').onsubmit=function(e){{
     show_in_planning:document.getElementById('u-planning').value==='1'?1:0,
     send_welcome:(!id&&document.getElementById('u-send-welcome').checked)?true:false
   }};
-  var pw=document.getElementById('u-pw').value;
   if(pw) d.password=pw;
   fetch(id?bp+'/api/users/'+id:bp+'/api/users',
     {{method:id?'PUT':'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
@@ -178,11 +204,28 @@ document.getElementById('user-form').onsubmit=function(e){{
           location.reload();
         }});
       }} else r.json().then(function(j){{alert(j.error||'Error');}});
-    }});
+    }}).catch(function(){{alert('Error de red al guardar usuario.');}});
 }};
+
+var _delConfirmId=null;
 function delUser(id){{
-  if(!confirm('¿Eliminar usuario?')) return;
-  fetch(bp+'/api/users/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+  _delConfirmId=id;
+  document.getElementById('del-confirm-modal').classList.add('open');
 }}
+document.getElementById('del-confirm-ok').onclick=function(){{
+  var id=_delConfirmId;
+  document.getElementById('del-confirm-modal').classList.remove('open');
+  fetch(bp+'/api/users/'+id,{{method:'DELETE'}})
+    .then(function(r){{
+      if(r.ok){{ location.reload(); return; }}
+      return r.text().then(function(t){{
+        try{{var j=JSON.parse(t);alert(j.error||'Error al eliminar usuario.');}}
+        catch(e){{alert('Error al eliminar usuario ('+r.status+').');}}
+      }});
+    }}).catch(function(){{alert('Error de red al eliminar usuario.');}});
+}};
+document.getElementById('del-confirm-cancel').onclick=function(){{
+  document.getElementById('del-confirm-modal').classList.remove('open');
+}};
 </script>"""
     return _shell("users", user, content)
