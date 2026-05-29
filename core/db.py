@@ -1,5 +1,5 @@
 """Database connection, session management, and schema."""
-import os, sqlite3, secrets, threading, json
+import os, sqlite3, secrets, threading, json, time
 
 PORT     = int(os.environ.get("PORT", 8014))
 BP       = os.environ.get("BASE_PATH", "").rstrip("/")
@@ -9,6 +9,8 @@ FILES_DIR = os.path.join(DATA_DIR, "files")
 os.makedirs(DATA_DIR,  exist_ok=True)
 os.makedirs(FILES_DIR, exist_ok=True)
 
+_SESSION_TTL = 8 * 3600  # 8 hours
+
 # ── sessions ──────────────────────────────────────────────────────────────────
 _sessions: dict = {}
 _slock = threading.Lock()
@@ -16,7 +18,7 @@ _slock = threading.Lock()
 def new_sess(user: dict) -> str:
     tok = secrets.token_hex(24)
     with _slock:
-        _sessions[tok] = dict(user)
+        _sessions[tok] = {"data": dict(user), "exp": time.time() + _SESSION_TTL}
     return tok
 
 def get_sess(h) -> dict | None:
@@ -24,7 +26,13 @@ def get_sess(h) -> dict | None:
         k, _, v = part.strip().partition("=")
         if k.strip() == "nd_sess":
             with _slock:
-                return _sessions.get(v.strip())
+                entry = _sessions.get(v.strip())
+                if entry is None:
+                    return None
+                if time.time() > entry["exp"]:
+                    _sessions.pop(v.strip(), None)
+                    return None
+                return entry["data"]
     return None
 
 def del_sess(h):

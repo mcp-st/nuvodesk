@@ -222,7 +222,7 @@ def _calendar_day(user, day_str):
         ORDER BY ss.hour_start, u.display_name""", (day_str,)))
 
     # all active technicians (columns)
-    techs = rs(q("SELECT id,display_name FROM users WHERE active=1 AND role IN ('admin','technician') ORDER BY display_name"))
+    techs = rs(q("SELECT id,display_name FROM users WHERE active=1 AND show_in_planning=1 ORDER BY display_name"))
     # active projects for modal
     projs = rs(q("SELECT id,name FROM projects WHERE status IN ('active','paused') ORDER BY name"))
 

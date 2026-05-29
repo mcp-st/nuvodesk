@@ -1,12 +1,7 @@
 """Users management page."""
-import os, json, re, mimetypes, calendar as _cal
-from datetime import datetime, date as _date, timedelta
-from core.db import PORT, BP, DATA_DIR, DB_PATH, FILES_DIR, q, q1, run, rs, r2d
-from core.helpers import (
-    _hash, _esc, _jattr, _now, _fmt_size, _fmt_duration, _parse_multipart, _stock_move,
-    PROJ_COLORS, _pcolor, STATUS_LABEL, STATUS_COLOR, PRIORITY_COLOR,
-    WORK_TYPES, _wt_badge, _badge, _pbadge,
-)
+import json
+from core.db import BP, q, rs, r2d
+from core.helpers import _esc
 from web.layout import _shell
 
 def _users_page(user):
@@ -20,13 +15,23 @@ def _users_page(user):
         uid_val = u['id']
         del_btn = ("" if uid_val == user['id'] else
                    f'<button class="btn btn-danger btn-icon" onclick="delUser({uid_val})">✕</button>')
-        rows += (f'<tr><td class="fw7">{_esc(u["display_name"])}</td>'
-            f'<td class="muted">{_esc(u["username"])}</td>'
+        safe_u = {k: u[k] for k in (
+            "id","display_name","username","role","active","email",
+            "show_in_planning","first_name","last_name","phone","extension"
+        ) if k in u}
+        user_attr = json.dumps(safe_u).replace('"', '&quot;')
+        full = _esc(u.get("display_name") or "")
+        phone_str = _esc(u.get("phone") or "")
+        phone_td = f'<span style="font-size:.78rem;color:var(--muted)">{phone_str}</span>' if phone_str else ""
+        rows += (f'<tr>'
+            f'<td class="fw7">{full}</td>'
+            f'<td class="muted" style="font-size:.82rem">{_esc(u["username"])}</td>'
             f'<td>{_esc(role_lbl)}</td>'
             f'<td>{active_dot}</td>'
-            f'<td class="muted col-m-hide">{u["kit_items"]} items</td>'
-            f'<td class="muted col-m-hide">{_esc((u["created_at"] or "")[:10])}</td>'
-            f'<td><button class="btn btn-ghost btn-icon" onclick="editUser({json.dumps(dict(u))})">✏️</button>'
+            f'<td class="col-m-hide">{_esc(u.get("email") or "")}</td>'
+            f'<td class="col-m-hide">{phone_td}</td>'
+            f'<td><button class="btn btn-ghost btn-icon" data-user="{user_attr}" '
+            f'onclick="editUser(JSON.parse(this.dataset.user))">✏️</button>'
             f'{del_btn}</td></tr>')
 
     content = f"""
@@ -35,32 +40,58 @@ def _users_page(user):
 </div>
 <div class="card">
 <div class="tbl-wrap"><table><thead><tr>
-  <th>Nombre</th><th>Usuario</th><th>Rol</th><th></th>
-  <th class="col-m-hide">Kit</th><th class="col-m-hide">Creado</th><th></th>
+  <th>Nombre</th><th>Login</th><th>Rol</th><th></th>
+  <th class="col-m-hide">Email</th><th class="col-m-hide">Teléfono</th><th></th>
 </tr></thead><tbody>{rows}</tbody></table></div>
 </div>
 
 <div class="modal-bg" id="user-modal">
-<div class="modal">
+<div class="modal" style="max-width:560px">
   <h2 id="user-modal-title">Nuevo usuario</h2>
   <form id="user-form">
   <input type="hidden" id="user-id">
+
   <div class="form-row">
-    <div><label>Nombre completo</label><input id="u-display" required></div>
+    <div><label>Nombre</label><input id="u-firstname" required></div>
+    <div><label>Apellido</label><input id="u-lastname"></div>
+  </div>
+  <div class="form-row">
+    <div><label>Teléfono</label><input id="u-phone" type="tel"></div>
+    <div><label>Extensión</label><input id="u-ext"></div>
+  </div>
+  <div class="form-row">
+    <div><label>Email <span class="muted" style="font-weight:400">(notificaciones)</span></label>
+      <input type="email" id="u-email"></div>
     <div><label>Usuario (login)</label><input id="u-username" required autocomplete="off"></div>
   </div>
   <div class="form-row">
-    <div><label>Contraseña <span id="u-pw-hint" class="muted" style="font-weight:400">(vacío = no cambiar)</span></label>
-      <input type="password" id="u-pw" autocomplete="new-password"></div>
+    <div>
+      <label>Contraseña
+        <span id="u-pw-hint" class="muted" style="font-weight:400;display:none"> (vacío = enviar link por email)</span>
+        <span id="u-pw-hint-edit" class="muted" style="font-weight:400;display:none"> (vacío = no cambiar)</span>
+      </label>
+      <input type="password" id="u-pw" autocomplete="new-password">
+    </div>
     <div><label>Rol</label><select id="u-role">
       <option value="technician">Técnico</option>
       <option value="backoffice">Backoffice</option>
       <option value="admin">Administrador</option>
     </select></div>
   </div>
-  <div class="form-row"><div><label>Activo</label>
-    <select id="u-active"><option value="1">Sí</option><option value="0">No</option></select>
-  </div></div>
+  <div class="form-row">
+    <div><label>Activo</label>
+      <select id="u-active"><option value="1">Sí</option><option value="0">No</option></select>
+    </div>
+    <div><label>Visible en planificación</label>
+      <select id="u-planning"><option value="1">Sí</option><option value="0">No</option></select>
+    </div>
+  </div>
+  <div id="u-send-welcome-row" style="display:none;padding:10px 0 4px">
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:500;font-size:.875rem">
+      <input type="checkbox" id="u-send-welcome" checked style="width:16px;height:16px;accent-color:var(--primary)">
+      Enviar email de bienvenida con link de activación
+    </label>
+  </div>
   <div class="modal-foot">
     <button type="button" class="btn btn-ghost" onclick="closeUserModal()">Cancelar</button>
     <button type="submit" class="btn btn-primary">Guardar</button>
@@ -70,24 +101,50 @@ def _users_page(user):
 
 <script>
 var bp={json.dumps(BP)};
+var _editingUser=false;
+function _syncWelcomeRow(){{
+  var pw=document.getElementById('u-pw').value;
+  var email=document.getElementById('u-email').value.trim();
+  var row=document.getElementById('u-send-welcome-row');
+  if(!_editingUser && !pw && email) row.style.display='block';
+  else row.style.display='none';
+}}
+document.getElementById('u-pw').addEventListener('input',_syncWelcomeRow);
+document.getElementById('u-email').addEventListener('input',_syncWelcomeRow);
+
 function openNewUser(){{
+  _editingUser=false;
   document.getElementById('user-modal-title').textContent='Nuevo usuario';
   document.getElementById('user-id').value='';
-  ['display','username','pw'].forEach(function(f){{document.getElementById('u-'+f).value='';}});
-  document.getElementById('u-pw-hint').style.display='none';
+  ['firstname','lastname','phone','ext','username','pw','email'].forEach(function(f){{
+    document.getElementById('u-'+f).value='';
+  }});
+  document.getElementById('u-pw-hint').style.display='inline';
+  document.getElementById('u-pw-hint-edit').style.display='none';
   document.getElementById('u-role').value='technician';
   document.getElementById('u-active').value='1';
+  document.getElementById('u-planning').value='1';
+  document.getElementById('u-send-welcome').checked=true;
+  document.getElementById('u-send-welcome-row').style.display='none';
   document.getElementById('user-modal').classList.add('open');
 }}
 function editUser(u){{
+  _editingUser=true;
   document.getElementById('user-modal-title').textContent='Editar usuario';
   document.getElementById('user-id').value=u.id;
-  document.getElementById('u-display').value=u.display_name||'';
+  document.getElementById('u-firstname').value=u.first_name||'';
+  document.getElementById('u-lastname').value=u.last_name||'';
+  document.getElementById('u-phone').value=u.phone||'';
+  document.getElementById('u-ext').value=u.extension||'';
   document.getElementById('u-username').value=u.username||'';
   document.getElementById('u-pw').value='';
-  document.getElementById('u-pw-hint').style.display='';
+  document.getElementById('u-pw-hint').style.display='none';
+  document.getElementById('u-pw-hint-edit').style.display='inline';
+  document.getElementById('u-email').value=u.email||'';
   document.getElementById('u-role').value=u.role||'technician';
   document.getElementById('u-active').value=u.active?'1':'0';
+  document.getElementById('u-planning').value=(u.show_in_planning===0||u.show_in_planning==='0')?'0':'1';
+  document.getElementById('u-send-welcome-row').style.display='none';
   document.getElementById('user-modal').classList.add('open');
 }}
 function closeUserModal(){{document.getElementById('user-modal').classList.remove('open');}}
@@ -95,15 +152,33 @@ document.getElementById('user-modal').onclick=function(e){{if(e.target===this)cl
 document.getElementById('user-form').onsubmit=function(e){{
   e.preventDefault();
   var id=document.getElementById('user-id').value;
-  var d={{display_name:document.getElementById('u-display').value,
+  var fn=document.getElementById('u-firstname').value.trim();
+  var ln=document.getElementById('u-lastname').value.trim();
+  var d={{
+    first_name:fn, last_name:ln,
+    display_name:(fn+(ln?' '+ln:'')).trim()||fn,
     username:document.getElementById('u-username').value,
+    email:document.getElementById('u-email').value,
+    phone:document.getElementById('u-phone').value,
+    extension:document.getElementById('u-ext').value,
     role:document.getElementById('u-role').value,
-    active:document.getElementById('u-active').value==='1'?1:0}};
+    active:document.getElementById('u-active').value==='1'?1:0,
+    show_in_planning:document.getElementById('u-planning').value==='1'?1:0,
+    send_welcome:(!id&&document.getElementById('u-send-welcome').checked)?true:false
+  }};
   var pw=document.getElementById('u-pw').value;
   if(pw) d.password=pw;
   fetch(id?bp+'/api/users/'+id:bp+'/api/users',
     {{method:id?'PUT':'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
-    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+    .then(function(r){{
+      if(r.ok){{
+        r.json().then(function(j){{
+          if(j.welcome_sent) alert('Usuario creado. Email de bienvenida enviado a '+d.email+'.');
+          else if(j.welcome_error) alert('Usuario creado, pero error al enviar email: '+j.welcome_error);
+          location.reload();
+        }});
+      }} else r.json().then(function(j){{alert(j.error||'Error');}});
+    }});
 }};
 function delUser(id){{
   if(!confirm('¿Eliminar usuario?')) return;
@@ -111,6 +186,3 @@ function delUser(id){{
 }}
 </script>"""
     return _shell("users", user, content)
-
-
-# ── project report ────────────────────────────────────────────────────────────

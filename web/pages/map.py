@@ -31,10 +31,11 @@ def _map_page(user):
 
     def _unmapped_row(p):
         pid = p["id"]
-        addr_js = _json.dumps(p.get("address",""))
+        addr_attr = _esc(p.get("address",""))
         return (f'<tr><td><a href="{BP}/projects/{pid}">{_esc(p["name"])}</a></td>'
-                f'<td class="muted" style="font-size:.8rem">{_esc(p.get("address",""))}</td>'
-                f'<td><button class="btn btn-ghost btn-sm" onclick="geocodeProject({pid},{addr_js})">📍 Geolocalizar</button></td></tr>')
+                f'<td class="muted" style="font-size:.8rem">{addr_attr}</td>'
+                f'<td><button class="btn btn-ghost btn-sm" data-pid="{pid}" data-addr="{addr_attr}"'
+                f' onclick="geocodeProject(this.dataset.pid,this.dataset.addr)">📍 Geolocalizar</button></td></tr>')
     unmapped_rows = "".join(_unmapped_row(p) for p in unmapped)
 
     content = f"""
@@ -82,17 +83,15 @@ if(markers.length>1){{
 }}
 function geocodeProject(pid,address){{
   if(!address){{alert('Este proyecto no tiene dirección. Edítalo primero.');return;}}
-  fetch('https://nominatim.openstreetmap.org/search?q='+encodeURIComponent(address)+'&format=json&limit=1',
-    {{headers:{{'Accept':'application/json','User-Agent':'NuvoDesk/1.0'}}}})
-    .then(function(r){{return r.json();}})
+  fetch(bp+'/api/geocode?q='+encodeURIComponent(address))
+    .then(function(r){{return r.ok?r.json():r.json().then(function(j){{throw new Error(j.error||'No encontrado');}});}})
     .then(function(d){{
-      if(!d.length){{alert('No se encontró la dirección: '+address);return;}}
-      var lat=parseFloat(d[0].lat),lng=parseFloat(d[0].lon);
-      fetch(bp+'/api/projects/'+pid+'/geocode',{{method:'POST',
+      return fetch(bp+'/api/projects/'+pid+'/geocode',{{method:'POST',
         headers:{{'Content-Type':'application/json'}},
-        body:JSON.stringify({{lat:lat,lng:lng}})}})
-        .then(function(r){{if(r.ok)location.reload();}});
-    }}).catch(function(){{alert('Error al geolocalizar. Comprueba la conexión.');}});
+        body:JSON.stringify({{lat:d.lat,lng:d.lng}})}});
+    }})
+    .then(function(r){{if(r.ok)location.reload();}})
+    .catch(function(err){{alert('No se encontró: '+address+' — '+err.message);}});
 }}
 </script>"""
     return _shell("map", user, content)

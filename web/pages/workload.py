@@ -25,7 +25,7 @@ def _workload_page(user, week_str=""):
     next_mon = str(mon + timedelta(days=7))
     dow_names = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
 
-    techs = rs(q("SELECT id,display_name FROM users WHERE active=1 AND role IN ('technician','admin','backoffice') ORDER BY display_name"))
+    techs = rs(q("SELECT id,display_name FROM users WHERE active=1 AND show_in_planning=1 ORDER BY display_name"))
     if not techs:
         techs = rs(q("SELECT id,display_name FROM users WHERE active=1 ORDER BY display_name"))
 

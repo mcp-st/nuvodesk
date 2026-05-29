@@ -3,6 +3,21 @@ import json
 from core.db import BP, q1, r2d
 from core.helpers import _esc
 
+# D3 brand mark: cloud outline (nuvo) + triple-ring LED pulse (link UP)
+_LOGO_SVG = (
+    '<svg viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg" '
+    'style="width:100%;height:100%;display:block">'
+    '<path d="M9 31C6 31 4 28.8 4 26c0-2.8 2-5 4.8-5.3C9.2 15.8 13.5 12 18.6 12'
+    'c3.1 0 5.9 1.4 7.8 3.5 1.5-1.4 3.5-2.3 5.7-2.3 4.4 0 8 3.4 8.2 7.7'
+    '.1 0 .1 0 .2 0C43 21.2 46 24.2 46 28c0 2.8-2.2 3.8-5 3.8H9z"'
+    ' stroke="white" stroke-width="2.5" fill="rgba(255,255,255,.07)"/>'
+    '<line x1="27" y1="32" x2="27" y2="37" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round"/>'
+    '<circle cx="27" cy="44" r="10" stroke="#22c55e" stroke-width="1" fill="none" opacity=".2"/>'
+    '<circle cx="27" cy="44" r="6.5" stroke="#22c55e" stroke-width="1.5" fill="none" opacity=".45"/>'
+    '<circle cx="27" cy="44" r="3.5" fill="#22c55e"/>'
+    '</svg>'
+)
+
 _NAV_ICONS = {
     "dashboard":  '<svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
     "projects":   '<svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="12" y2="17"/></svg>',
@@ -13,6 +28,7 @@ _NAV_ICONS = {
     "users":      '<svg class="icon" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
     "map":        '<svg class="icon" viewBox="0 0 24 24"><polygon points="1,6 1,22 8,18 16,22 23,18 23,2 16,6 8,2"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>',
     "download":   '<svg class="icon" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><path d="M12 8v8"/><path d="m8 12 4 4 4-4"/></svg>',
+    "settings":   '<svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
 }
 
 def _shell(page, user, content, extra_head=""):
@@ -26,12 +42,13 @@ def _shell(page, user, content, extra_head=""):
         ("kit",       f"{bp}/kit",       "Kit campo"),
         ("map",       f"{bp}/map",       "Mapa"),
         ("users",     f"{bp}/users",     "Usuarios"),
+        ("settings",  f"{bp}/settings",  "Configuración"),
         ("download",  f"{bp}/download",  "App móvil"),
     ]
     sidebar_links = ""
     bottom_links = ""
     for key, url, label in nav:
-        if key == "users" and user.get("role") != "admin":
+        if key in ("users", "settings") and user.get("role") != "admin":
             continue
         active = ' active' if page == key else ""
         aria   = ' aria-current="page"' if page == key else ""
@@ -127,10 +144,10 @@ function stopTimerGlobal(pid){{
 <div class="app-shell">
   <aside class="sidebar" id="sidebar" role="navigation" aria-label="Navegación principal">
     <a href="{bp}/" class="sidebar-logo">
-      <div class="logo-mark" aria-hidden="true">N</div>
+      <div class="logo-mark" aria-hidden="true">{_LOGO_SVG}</div>
       <div class="logo-text">
         <div class="logo-name">NuvoDesk</div>
-        <div class="logo-sub">Nuvolink · Telecoms</div>
+        <div class="logo-sub">by Nuvolink</div>
       </div>
     </a>
     <div class="sidebar-search">
@@ -151,19 +168,21 @@ function stopTimerGlobal(pid){{
     </div>
     {timer_widget}
     <div class="sidebar-footer">
-      <button class="notif-btn" id="notifBtn" onclick="toggleNotifPanel()" aria-label="Notificaciones" style="display:flex;align-items:center;gap:8px;width:100%;padding:8px 10px;background:none;border:none;cursor:pointer;color:var(--text);border-radius:6px;position:relative;margin-bottom:4px">
-        <span style="position:relative;display:inline-flex">
-          <svg class="icon" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-          <span id="notif-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:var(--red,#dc2626);color:#fff;border-radius:50%;font-size:.6rem;width:16px;height:16px;align-items:center;justify-content:center;font-weight:700"></span>
-        </span>
-        <span class="nav-item-label">Notificaciones</span>
-      </button>
-      <div id="notif-panel" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;max-height:280px;overflow-y:auto;box-shadow:0 4px 16px rgba(0,0,0,.12)">
-        <div style="padding:8px 12px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
-          <span style="font-size:.8rem;font-weight:600">Notificaciones</span>
-          <button onclick="markAllNotifRead()" style="background:none;border:none;font-size:.75rem;color:var(--primary);cursor:pointer">Marcar todas leídas</button>
+      <div class="notif-wrapper" id="notifWrapper">
+        <a href="{bp}/notifications" class="notif-btn{' active' if page == 'notifications' else ''}" aria-label="Notificaciones" style="display:flex;align-items:center;gap:8px;width:100%;padding:8px 10px;color:var(--{'text' if page != 'notifications' else 'primary'});border-radius:6px;position:relative;text-decoration:none">
+          <span style="position:relative;display:inline-flex">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+            <span id="notif-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:var(--red,#dc2626);color:#fff;border-radius:50%;font-size:.6rem;width:16px;height:16px;align-items:center;justify-content:center;font-weight:700"></span>
+          </span>
+          <span class="nav-item-label">Notificaciones</span>
+        </a>
+        <div class="notif-hover-panel" id="notifHoverPanel">
+          <div style="padding:8px 12px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+            <span style="font-size:.8rem;font-weight:600">Notificaciones</span>
+            <a href="{bp}/notifications" style="font-size:.75rem;color:var(--primary);text-decoration:none">Ver todas</a>
+          </div>
+          <div id="notif-list" style="padding:4px 0"></div>
         </div>
-        <div id="notif-list" style="padding:4px 0"></div>
       </div>
       <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" aria-label="Cambiar tema">
         <span class="nav-item-icon" aria-hidden="true">
@@ -260,17 +279,11 @@ function _renderSearch(results){{
 document.addEventListener('click',function(e){{
   if(!e.target.closest('.sidebar-search'))
     document.getElementById('search-results').classList.remove('open');
-  if(!e.target.closest('#notifBtn')&&!e.target.closest('#notif-panel'))
-    document.getElementById('notif-panel').style.display='none';
 }});
-function toggleNotifPanel(){{
-  var p=document.getElementById('notif-panel');
-  if(p.style.display==='none'){{
-    p.style.display='block';
-    loadNotifications();
-  }} else {{ p.style.display='none'; }}
-}}
-function loadNotifications(){{
+var _notifLoaded=false;
+function _loadNotifHover(){{
+  if(_notifLoaded) return;
+  _notifLoaded=true;
   fetch(bp+'/api/notifications')
     .then(function(r){{return r.json();}})
     .then(function(d){{
@@ -279,37 +292,33 @@ function loadNotifications(){{
       else badge.style.display='none';
       var list=document.getElementById('notif-list');
       if(!d.notifications.length){{
-        list.innerHTML='<div style="padding:16px;text-align:center;font-size:.82rem;color:#94a3b8">Sin notificaciones</div>';
+        list.innerHTML='<div style="padding:16px;text-align:center;font-size:.82rem;color:var(--muted)">Sin notificaciones</div>';
         return;
       }}
-      list.innerHTML=d.notifications.map(function(n){{
-        var unreadStyle=n.read?'':'background:color-mix(in srgb,var(--primary) 8%,transparent)';
-        return '<a href="'+(n.url||'#')+'" onclick="markNotifRead('+n.id+')" '
-          +'style="display:block;padding:10px 14px;border-bottom:1px solid var(--border);text-decoration:none;color:var(--text);'+unreadStyle+'">'
-          +'<div style="font-size:.8rem;font-weight:600">'+n.title.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</div>'
-          +'<div style="font-size:.75rem;color:var(--muted)">'+n.body.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</div>'
+      list.innerHTML=d.notifications.slice(0,6).map(function(n){{
+        var bg=n.read?'':'background:color-mix(in srgb,var(--primary) 8%,transparent)';
+        var t=(n.title||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+        var b2=(n.body||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+        return '<a href="'+(n.url||bp+'/notifications')+'" '
+          +'style="display:block;padding:10px 14px;border-bottom:1px solid var(--border);text-decoration:none;color:var(--text);'+bg+'">'
+          +'<div style="font-size:.8rem;font-weight:600">'+t+'</div>'
+          +'<div style="font-size:.75rem;color:var(--muted)">'+b2+'</div>'
           +'<div style="font-size:.7rem;color:var(--muted);margin-top:2px">'+n.created_at.slice(0,16)+'</div>'
           +'</a>';
       }}).join('');
-    }});
-}}
-function markNotifRead(id){{
-  fetch(bp+'/api/notifications/'+id+'/read',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:'{{}}'}});
-}}
-function markAllNotifRead(){{
-  fetch(bp+'/api/notifications/read_all',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:'{{}}'}})
-    .then(function(){{loadNotifications();}});
-}}
-(function(){{
-  fetch(bp+'/api/notifications')
-    .then(function(r){{return r.json();}})
-    .then(function(d){{
-      if(d.unread>0){{
-        var b=document.getElementById('notif-badge');
-        b.style.display='flex'; b.textContent=d.unread>9?'9+':d.unread;
-      }}
     }}).catch(function(){{}});
-}})();
+}}
+var _nw=document.getElementById('notifWrapper');
+if(_nw) _nw.addEventListener('mouseenter',_loadNotifHover);
+// badge on load (without opening panel)
+fetch(bp+'/api/notifications')
+  .then(function(r){{return r.json();}})
+  .then(function(d){{
+    if(d.unread>0){{
+      var b=document.getElementById('notif-badge');
+      b.style.display='flex'; b.textContent=d.unread>9?'9+':d.unread;
+    }}
+  }}).catch(function(){{}});
 </script>
 </body>
 </html>"""

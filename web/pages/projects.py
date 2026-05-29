@@ -35,7 +35,7 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
         ORDER BY CASE p.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
           WHEN 'normal' THEN 2 ELSE 3 END, p.updated_at DESC""", params))
 
-    techs = rs(q("SELECT id,display_name FROM users WHERE active=1 ORDER BY display_name"))
+    techs = rs(q("SELECT id,display_name FROM users WHERE active=1 AND show_in_planning=1 ORDER BY display_name"))
     tech_opts = "".join(f'<option value="{t["id"]}">{_esc(t["display_name"])}</option>' for t in techs)
 
     fbtn = lambda s, l: (f'<a href="{_pu(status=s)}" '
@@ -80,8 +80,9 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
         safe_p = {k: v for k, v in dict(p).items() if isinstance(v, (str, int, float, type(None)))}
         wt_html = _wt_badge(p.get('work_type') or 'proyecto')
         search_val = f"{p['name']} {p['client']} {p.get('reference','') or ''} {p.get('tech','') or ''}".lower()
+        pid = p["id"]
         cards_html += (
-            f'<a class="proj-card" href="{BP}/projects/{p["id"]}" data-search="{_esc(search_val)}"'
+            f'<a class="proj-card" href="{BP}/projects/{pid}" data-search="{_esc(search_val)}"'
             f' style="border-left:3px solid {bc}">'
             f'<div class="proj-card-body">'
             f'<div class="proj-card-name">{_esc(p["name"])}</div>'
@@ -98,6 +99,9 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
             f'<span style="display:flex;align-items:center;gap:6px">{members_html}{tech_html}</span>'
             f'<button onclick="event.preventDefault();event.stopPropagation();editProject({_jattr(safe_p)})" '
             f'class="btn btn-ghost btn-icon">✏️</button>'
+            f'<button data-pid="{pid}" data-pname="{_esc(p["name"])}" '
+            f'onclick="event.preventDefault();event.stopPropagation();deleteProject(this.dataset.pid,this.dataset.pname)" '
+            f'class="btn btn-ghost btn-icon" style="color:var(--danger,#dc2626)">🗑</button>'
             f'</div></a>')
 
     # ── table view ──
@@ -110,14 +114,18 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
         ref_html = f'<br><span class="muted" style="font-size:.72rem">#{_esc(p["reference"])}</span>' if p.get("reference") else ""
         safe_p2 = {k: v for k, v in dict(p).items() if isinstance(v, (str, int, float, type(None)))}
         search_val2 = f"{p['name']} {p['client']} {p.get('reference','') or ''} {p.get('tech','') or ''}".lower()
-        rows += (f'<tr data-search="{_esc(search_val2)}"><td><a href="{BP}/projects/{p["id"]}" class="fw7">{_esc(p["name"])}</a>'
+        pid2 = p["id"]
+        rows += (f'<tr data-search="{_esc(search_val2)}"><td><a href="{BP}/projects/{pid2}" class="fw7">{_esc(p["name"])}</a>'
             f'{ref_html}<br><span class="muted" style="font-size:.75rem">{_esc(p["client"])}</span></td>'
             f'<td>{_badge(p["status"])}</td><td class="col-m-hide">{_pbadge(p["priority"])}</td>'
             f'<td class="muted col-m-hide">{_esc(p["tech"] or "—")}</td>'
             f'<td class="muted col-m-hide">{_esc((p["due_date"] or "—")[:10])}</td>'
             f'<td class="col-m-hide">{prog}</td>'
             f'<td><button class="btn btn-ghost btn-icon" onclick="editProject({_jattr(safe_p2)})">✏️</button>'
-            f'<a href="{BP}/projects/{p["id"]}" class="btn btn-ghost btn-icon">→</a></td></tr>')
+            f'<button data-pid="{pid2}" data-pname="{_esc(p["name"])}" '
+            f'onclick="deleteProject(this.dataset.pid,this.dataset.pname)" '
+            f'class="btn btn-ghost btn-icon" style="color:var(--danger,#dc2626)">🗑</button>'
+            f'<a href="{BP}/projects/{pid2}" class="btn btn-ghost btn-icon">→</a></td></tr>')
 
     empty = "<p class='muted' style='text-align:center;padding:32px;grid-column:1/-1'>Sin proyectos todavía</p>"
     vt_cards  = "active" if view == "cards" else ""
@@ -146,8 +154,8 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
 </div>
 <div class="toolbar-left" style="margin-bottom:18px;gap:8px;flex-wrap:wrap">
   {filters}
-  <select onchange="location.href=this.value" style="height:32px;padding:0 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:.82rem">{wtype_opts}</select>
-  <select onchange="location.href=this.value" style="height:32px;padding:0 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:.82rem">{tech_sel_opts2}</select>
+  <select onchange="location.href=this.value" style="height:32px;padding:0 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:.82rem">{wtype_opts}</select>
+  <select onchange="location.href=this.value" style="height:32px;padding:0 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:.82rem">{tech_sel_opts2}</select>
 </div>
 <div id="proj-search-empty" style="display:none;text-align:center;padding:32px;color:var(--muted)">
   Sin resultados para la búsqueda.
@@ -272,6 +280,13 @@ function editProject(p){{
   document.getElementById('proj-modal').classList.add('open');
 }}
 function closeProjModal(){{document.getElementById('proj-modal').classList.remove('open');}}
+function deleteProject(id,name){{
+  if(!confirm('¿Eliminar proyecto "'+name+'"? Se eliminarán también todas sus tareas, materiales y archivos.'))return;
+  fetch(bp+'/api/projects/'+id,{{method:'DELETE'}})
+    .then(function(r){{return r.ok?r.json():r.json().then(function(j){{throw new Error(j.error||'Error');}});}})
+    .then(function(){{location.href=bp+'/projects';}})
+    .catch(function(err){{alert(err.message);}});
+}}
 document.getElementById('proj-modal').onclick=function(e){{if(e.target===this)closeProjModal();}};
 document.getElementById('proj-form').onsubmit=function(e){{
   e.preventDefault();
@@ -296,11 +311,25 @@ document.getElementById('proj-form').onsubmit=function(e){{
     .then(function(j){{
       closeProjModal();
       if(j.closing_summary){{ showClosingModal(j.closing_summary); }}
-      else{{ location.reload(); }}
+      else{{ location.href=bp+'/projects'; }}
     }})
     .catch(function(err){{alert(err.message);}});
 }};
-{("(function(){var today=new Date().toISOString().slice(0,10);openNewProject();document.getElementById('f-wtype').value='averia';document.getElementById('f-priority').value='urgent';document.getElementById('f-start').value=today;document.getElementById('f-name').focus();})();" if new=="averia" else "")}
+(function(){{
+  var qs=new URLSearchParams(window.location.search);
+  var tipo=qs.get('new');
+  if(tipo==='averia'||tipo==='proyecto'){{
+    var today=new Date().toISOString().slice(0,10);
+    openNewProject();
+    if(tipo==='averia'){{
+      document.getElementById('f-wtype').value='averia';
+      document.getElementById('f-priority').value='urgent';
+    }}
+    document.getElementById('f-start').value=today;
+    document.getElementById('f-name').focus();
+    history.replaceState(null,'',window.location.pathname);
+  }}
+}})();
 var _CLOSING_CHECKS=[
   'Prueba de conectividad realizada',
   'Cables y puertos etiquetados',
@@ -337,7 +366,7 @@ function showClosingModal(s){{
     <h2 style="margin-bottom:4px">Proyecto completado</h2>
     <p id="cm-name" style="color:var(--muted);font-size:.9rem;margin-bottom:16px"></p>
   </div>
-  <div style="background:var(--surface2,var(--surface));border-radius:8px;padding:14px;margin-bottom:16px">
+  <div style="background:var(--bg3);border-radius:8px;padding:14px;margin-bottom:16px">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;font-size:.875rem">
       <span style="color:var(--muted)">Tareas completadas</span><span id="cm-tasks" class="fw7"></span>
       <span style="color:var(--muted)">Horas estimadas</span><span id="cm-est" class="fw7"></span>
@@ -345,7 +374,7 @@ function showClosingModal(s){{
       <span style="color:var(--muted)">Horas (diario)</span><span id="cm-logged" class="fw7"></span>
     </div>
   </div>
-  <div style="background:var(--surface2,var(--surface));border-radius:8px;padding:14px;margin-bottom:16px">
+  <div style="background:var(--bg3);border-radius:8px;padding:14px;margin-bottom:16px">
     <div style="font-size:.8rem;font-weight:700;margin-bottom:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">✔ Checklist de cierre</div>
     <div id="cm-checklist" style="display:flex;flex-direction:column;gap:6px"></div>
   </div>

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """NuvoDesk v3 — Nuvolink field project & materials management."""
 
-import os, json, sqlite3, re, calendar as _cal, mimetypes, secrets, base64
+import os, json, sqlite3, re, calendar as _cal, mimetypes, secrets, base64, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote_plus
 from datetime import datetime, date as _date, timedelta
@@ -12,7 +12,7 @@ from core.db import (
     db, q, q1, run, rs, r2d, _dblock,
 )
 from core.helpers import (
-    _hash, _esc, _jattr, _now, _fmt_size, _fmt_duration,
+    _hash, _check_pw, _esc, _jattr, _now, _fmt_size, _fmt_duration,
     _parse_multipart, _stock_move,
     PROJ_COLORS, _pcolor, STATUS_LABEL, STATUS_COLOR, PRIORITY_COLOR,
     WORK_TYPES, _wt_badge, _badge, _pbadge,
@@ -224,6 +224,16 @@ CREATE TABLE IF NOT EXISTS notifications (
     read       INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS notif_rules (
+    event_key       TEXT PRIMARY KEY,
+    label           TEXT NOT NULL DEFAULT '',
+    notify_internal INTEGER NOT NULL DEFAULT 1,
+    notify_email    INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS project_audit (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -246,6 +256,14 @@ MIGRATIONS = [
     "ALTER TABLE project_logs ADD COLUMN technicians INTEGER DEFAULT 1",
     "ALTER TABLE projects ADD COLUMN lat REAL DEFAULT NULL",
     "ALTER TABLE projects ADD COLUMN lng REAL DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN show_in_planning INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE users ADD COLUMN first_name TEXT DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN last_name TEXT DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN phone TEXT DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN extension TEXT DEFAULT ''",
+    "ALTER TABLE users ADD COLUMN reset_token TEXT DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN reset_token_expiry TEXT DEFAULT NULL",
 ]
 
 def init_db():
@@ -263,12 +281,45 @@ def init_db():
                 "INSERT INTO users (username,pw_hash,display_name,role) VALUES (?,?,?,?)",
                 ("admin", _hash("admin"), "Administrador", "admin"))
             db().commit()
+        _default_rules = [
+            ("project_assigned",  "Proyecto asignado a técnico",           1, 0),
+            ("project_due_soon",  "Proyecto próximo a vencer",             1, 0),
+            ("task_overdue",      "Tarea vencida sin completar",           1, 0),
+            ("stock_low",         "Material por debajo del stock mínimo",  1, 0),
+            ("project_completed", "Proyecto marcado como completado",      0, 0),
+        ]
+        for _ek, _lbl, _ni, _ne in _default_rules:
+            db().execute(
+                "INSERT OR IGNORE INTO notif_rules (event_key,label,notify_internal,notify_email) VALUES(?,?,?,?)",
+                (_ek, _lbl, _ni, _ne))
+        db().commit()
 
+
+# ── geocoding helper ──────────────────────────────────────────────────────────
+import urllib.request as _ureq, urllib.parse as _uparse
+
+def _geocode_address(address):
+    """Returns (lat, lng) floats or (None, None) on failure."""
+    try:
+        url = ("https://nominatim.openstreetmap.org/search?q="
+               + _uparse.quote(address) + "&format=json&limit=1")
+        req = _ureq.Request(url, headers={
+            "User-Agent": "NuvoDesk/1.0 (mcodony@gmail.com)",
+            "Accept": "application/json",
+        })
+        with _ureq.urlopen(req, timeout=6) as r:
+            data = json.loads(r.read())
+            if data:
+                return float(data[0]["lat"]), float(data[0]["lon"])
+    except Exception:
+        pass
+    return None, None
 
 # ── shell ─────────────────────────────────────────────────────────────────────
 
 from web.layout import _NAV_ICONS, _shell
-from web.pages.misc import _login_page, _download_page
+from core.notify import _notify, send_email, get_setting, set_setting
+from web.pages.misc import _login_page, _download_page, _set_password_page
 from web.pages.dashboard import _dashboard
 from web.pages.projects import _projects_page, _build_kanban, _build_file_grid
 def _project_detail(user, pid):
@@ -296,7 +347,7 @@ def _project_detail(user, pid):
         FROM project_members pm JOIN users u ON u.id=pm.user_id
         WHERE pm.project_id=? ORDER BY pm.start_date,u.display_name""", (pid,)))
 
-    all_users = rs(q("SELECT id,display_name,role FROM users WHERE active=1 ORDER BY display_name"))
+    all_users = rs(q("SELECT id,display_name,role FROM users WHERE active=1 AND show_in_planning=1 ORDER BY display_name"))
     user_opts = "".join(
         f'<option value="{u["id"]}">{_esc(u["display_name"])}</option>' for u in all_users)
 
@@ -1177,18 +1228,14 @@ function editProject(p){{
 function geocodeProjAddr(){{
   var addr=document.getElementById('f-addr').value.trim();
   if(!addr){{alert('Escribe primero una dirección');return;}}
-  fetch('https://nominatim.openstreetmap.org/search?q='+encodeURIComponent(addr)+'&format=json&limit=1',
-    {{headers:{{'Accept':'application/json','User-Agent':'NuvoDesk/1.0'}}}})
-    .then(function(r){{return r.json();}})
+  fetch(bp+'/api/geocode?q='+encodeURIComponent(addr))
+    .then(function(r){{return r.ok?r.json():r.json().then(function(j){{throw new Error(j.error||'No encontrado');}});}})
     .then(function(d){{
-      if(!d.length){{alert('No se encontró: '+addr);return;}}
-      var projId=document.getElementById('f-id').value;
-      if(!projId){{alert('Guarda el proyecto primero para poder geolocalizarlo');return;}}
-      fetch(bp+'/api/projects/'+projId+'/geocode',{{method:'POST',
+      fetch(bp+'/api/projects/{pid}/geocode',{{method:'POST',
         headers:{{'Content-Type':'application/json'}},
-        body:JSON.stringify({{lat:parseFloat(d[0].lat),lng:parseFloat(d[0].lon)}})}})
+        body:JSON.stringify({{lat:d.lat,lng:d.lng}})}})
         .then(function(r){{if(r.ok)alert('Ubicación guardada ✓');}});
-    }}).catch(function(){{alert('Error al geolocalizar');}});
+    }}).catch(function(err){{alert('No se encontró la dirección: '+err.message);}});
 }}
 function closeProjModal(){{document.getElementById('proj-modal').classList.remove('open');}}
 document.getElementById('proj-modal').onclick=function(e){{if(e.target===this)closeProjModal();}};
@@ -1692,6 +1739,8 @@ from web.pages.reports import _project_report, _project_report_md, _project_alba
 from web.pages.calendar import _calendar_page, _calendar_day
 from web.pages.workload import _workload_page
 from web.pages.map import _map_page
+from web.pages.settings import _settings_page
+from web.pages.notifications import _notifications_page
 def _body(h) -> dict:
     n = int(h.headers.get("Content-Length", 0))
     if not n: return {}
@@ -1714,6 +1763,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ct)
         self.send_header("Content-Length", str(len(b)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-XSS-Protection", "1; mode=block")
+        if ct.startswith("text/html"):
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         if extra_headers:
             for k, v in extra_headers.items():
                 self.send_header(k, v)
@@ -1743,8 +1797,8 @@ class Handler(BaseHTTPRequestHandler):
                     (project_id, stored, orig, mime, len(fobj['data']), sess['id'], notes))
                 uploaded.append({'id': fid, 'name': orig})
             self._json(201, {'files': uploaded})
-        except Exception as ex:
-            self._json(500, {"error": str(ex)})
+        except Exception:
+            self._json(500, {"error": "Error al procesar el archivo"})
 
     def _json(self, code, data):
         self._send(code, json.dumps(data, ensure_ascii=False), "application/json")
@@ -1768,6 +1822,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if rel == "/login":
             self._send(200, _login_page()); return
+        if rel == "/set-password":
+            self._send(200, _set_password_page(qs.get("token",[""])[0])); return
         if rel == "/logout":
             _del_sess(self)
             self.send_response(302)
@@ -1830,11 +1886,17 @@ class Handler(BaseHTTPRequestHandler):
         if rel == "/users":
             if sess.get("role") != "admin": self._redirect(f"{BP}/"); return
             self._send(200, _users_page(sess)); return
+        if rel == "/settings":
+            if sess.get("role") != "admin": self._redirect(f"{BP}/"); return
+            rules = rs(q("SELECT * FROM notif_rules ORDER BY event_key"))
+            self._send(200, _settings_page(sess, rules)); return
         if rel == "/workload":
             wk = qs.get("week",[""])[0]
             self._send(200, _workload_page(sess, wk)); return
         if rel == "/map":
             self._send(200, _map_page(sess)); return
+        if rel == "/notifications":
+            self._send(200, _notifications_page(sess)); return
         if rel == "/download":
             self._send(200, _download_page(sess)); return
 
@@ -1852,10 +1914,26 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             tid = int(m.group(1))
             self._json(200, rs(q("SELECT * FROM task_photos WHERE task_id=? ORDER BY created_at DESC", (tid,)))); return
+        if rel == "/api/geocode":
+            addr = qs.get("q", [""])[0].strip()
+            if not addr: self._json(400, {"error":"q requerido"}); return
+            lat, lng = _geocode_address(addr)
+            if lat is None: self._json(404, {"error":"Dirección no encontrada"}); return
+            self._json(200, {"lat": lat, "lng": lng}); return
+
         if rel == "/api/notifications":
             notifs = rs(q("SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 30", (sess["id"],)))
             unread = q1("SELECT COUNT(*) FROM notifications WHERE user_id=? AND read=0", (sess["id"],))[0]
             self._json(200, {"notifications": notifs, "unread": unread}); return
+        if rel == "/api/notif_rules":
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            self._json(200, rs(q("SELECT * FROM notif_rules ORDER BY event_key"))); return
+        if rel == "/api/settings":
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            rows = rs(q("SELECT key,value FROM app_settings"))
+            cfg = {r["key"]: r["value"] for r in rows}
+            cfg.pop("smtp_pass", None)
+            self._json(200, cfg); return
         m = re.match(r"^/api/tasks/(\d+)/photos/(.+)$", rel)
         if m:
             tid, fname = int(m.group(1)), m.group(2)
@@ -1884,7 +1962,8 @@ class Handler(BaseHTTPRequestHandler):
             with open(fpath,'rb') as fp: fdata = fp.read()
             mime = pf['mimetype'] or mimetypes.guess_type(fname)[0] or 'application/octet-stream'
             is_img = mime.startswith('image/')
-            disp = 'inline' if is_img else f'attachment; filename="{pf["original_name"]}"'
+            safe_name = re.sub(r'["\r\n\\]', '_', pf["original_name"] or fname)
+            disp = 'inline' if is_img else f'attachment; filename="{safe_name}"'
             self._send(200, fdata, mime, {"Content-Disposition": disp}); return
         if rel == "/api/kit":
             if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
@@ -1945,18 +2024,38 @@ class Handler(BaseHTTPRequestHandler):
         rel = rel or "/"
         req_ct = self.headers.get('Content-Type','')
 
+        # public endpoints — no auth required
+        if rel == "/api/set-password":
+            data = _body(self)
+            token = (data.get("token","") or "").strip()
+            pw = (data.get("password","") or "").strip()
+            if not token or not pw:
+                self._json(400, {"error":"Datos incompletos"}); return
+            row = r2d(q1("SELECT id,reset_token_expiry FROM users WHERE reset_token=?", (token,)))
+            if not row:
+                self._json(400, {"error":"Enlace inválido o expirado"}); return
+            expiry = row.get("reset_token_expiry","")
+            if expiry and datetime.fromisoformat(expiry) < datetime.now():
+                self._json(400, {"error":"El enlace ha caducado (48 horas)"}); return
+            run("UPDATE users SET pw_hash=?,reset_token=NULL,reset_token_expiry=NULL WHERE id=?",
+                (_hash(pw), row["id"]))
+            self._json(200, {"ok":True}); return
+
         # login — parse body before auth check
         if rel == "/api/login":
             data = _body(self)
             un = (data.get("username","") or "").strip()
             pw = data.get("password","") or ""
             u = r2d(q1("SELECT * FROM users WHERE username=? AND active=1", (un,)))
-            if not u or u["pw_hash"] != _hash(pw):
+            if not u or not _check_pw(pw, u["pw_hash"]):
                 self._send(200, _login_page("Usuario o contraseña incorrectos")); return
+            # upgrade legacy SHA-256 hash to scrypt on successful login
+            if len(u["pw_hash"]) == 64:
+                run("UPDATE users SET pw_hash=? WHERE id=?", (_hash(pw), u["id"]))
             tok = _new_sess(u)
             self.send_response(302)
             self.send_header("Location", f"{BP}/")
-            self.send_header("Set-Cookie", f"nd_sess={tok}; Path={BP or '/'}; HttpOnly")
+            self.send_header("Set-Cookie", f"nd_sess={tok}; Path={BP or '/'}; HttpOnly; SameSite=Strict; Secure")
             self.end_headers(); return
 
         sess = _get_sess(self)
@@ -2003,6 +2102,22 @@ class Handler(BaseHTTPRequestHandler):
                  data.get("contact_phone",""),float(data.get("estimated_hours") or 0),
                  data.get("start_date",""),data.get("due_date",""),
                  data.get("assigned_to") or None, sess["id"], wt))
+            # auto-geocode on create if address provided
+            new_addr_c = data.get("address","")
+            if new_addr_c:
+                _glat, _glng = _geocode_address(new_addr_c)
+                if _glat is not None:
+                    run("UPDATE projects SET lat=?,lng=? WHERE id=?", (_glat, _glng, pid))
+            new_tech_create = data.get("assigned_to")
+            if new_tech_create and int(new_tech_create) != sess["id"]:
+                _notify(int(new_tech_create), "Nuevo proyecto asignado",
+                        f"{n} — {c}", f"{BP}/projects/{pid}", "project_assigned",
+                        extra={"project": {
+                            "name": n, "client": c,
+                            "priority": data.get("priority","normal"),
+                            "due_date": data.get("due_date",""),
+                            "work_type": wt,
+                        }})
             self._json(201, {"id":pid}); return
 
         # time tracking
@@ -2311,15 +2426,51 @@ class Handler(BaseHTTPRequestHandler):
         if rel == "/api/users":
             if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
             un = (data.get("username","") or "").strip()
-            dn = (data.get("display_name","") or "").strip()
+            fn = (data.get("first_name","") or "").strip()
+            ln = (data.get("last_name","") or "").strip()
+            dn = (data.get("display_name","") or "").strip() or (fn + (" " + ln if ln else "")).strip() or un
             pw = (data.get("password","") or "").strip()
-            if not un or not dn or not pw: self._json(400, {"error":"Datos incompletos"}); return
+            email = (data.get("email","") or "").strip()
+            if not un or not dn: self._json(400, {"error":"Datos incompletos"}); return
+            if not pw and not email:
+                self._json(400, {"error":"Se requiere contraseña o email para enviar activación"}); return
             if q1("SELECT id FROM users WHERE username=?", (un,)):
                 self._json(400, {"error":"Usuario ya existe"}); return
-            uid = run("INSERT INTO users (username,pw_hash,display_name,role,active) VALUES(?,?,?,?,?)",
-                      (un,_hash(pw),dn,data.get("role","technician"),
-                       1 if data.get("active",1) else 0))
-            self._json(201, {"id":uid}); return
+            token = secrets.token_urlsafe(32) if not pw else None
+            expiry = (datetime.now() + timedelta(hours=48)).isoformat() if not pw else None
+            uid = run(
+                "INSERT INTO users (username,pw_hash,display_name,role,active,email,show_in_planning,"
+                "first_name,last_name,phone,extension,reset_token,reset_token_expiry) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (un, _hash(pw) if pw else "",
+                 dn, data.get("role","technician"),
+                 1 if data.get("active",1) else 0,
+                 email,
+                 1 if data.get("show_in_planning",1) else 0,
+                 fn, ln,
+                 (data.get("phone","") or "").strip(),
+                 (data.get("extension","") or "").strip(),
+                 token, expiry))
+            resp = {"id": uid, "welcome_sent": False}
+            if token and data.get("send_welcome") and email:
+                from core.email_templates import tpl_welcome
+                set_pw_url = f"{BP}/set-password?token={token}"
+                subj, html = tpl_welcome(dn, un, set_pw_url)
+                werr = send_email(email, subj, html)
+                if werr:
+                    resp["welcome_error"] = werr
+                else:
+                    resp["welcome_sent"] = True
+            self._json(201, resp); return
+
+        # settings
+        if rel == "/api/settings/test_email":
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            to = (data.get("to","") or "").strip()
+            from core.email_templates import tpl_test
+            subj, html = tpl_test(to)
+            err = send_email(to, subj, html)
+            if err: self._json(200, {"ok":False,"error":err}); return
+            self._json(200, {"ok":True}); return
 
         self._json(404, {"error":"Not found"})
 
@@ -2333,7 +2484,7 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/projects/(\d+)$", rel)
         if m:
             pid = int(m.group(1))
-            old = r2d(q1("SELECT status,assigned_to,priority,due_date FROM projects WHERE id=?", (pid,))) or {}
+            old = r2d(q1("SELECT status,assigned_to,priority,due_date,address,lat,lng FROM projects WHERE id=?", (pid,))) or {}
             new_status = data.get("status","active")
             closing = (new_status == "completed" and old.get("status") != "completed")
             closed_sql = ",closed_at=datetime('now')" if closing else ""
@@ -2358,13 +2509,25 @@ class Handler(BaseHTTPRequestHandler):
                 if str(_ov) != str(_nv):
                     run("INSERT INTO project_audit (project_id,user_id,field,old_value,new_value) VALUES(?,?,?,?,?)",
                         (pid, sess["id"], _f, str(_ov), str(_nv)))
-            # notify if assigned_to changed
+            # auto-geocode if address changed or lat/lng missing
+            new_addr = data.get("address","")
+            if new_addr and (new_addr != (old.get("address") or "") or not old.get("lat")):
+                _glat, _glng = _geocode_address(new_addr)
+                if _glat is not None:
+                    run("UPDATE projects SET lat=?,lng=? WHERE id=?", (_glat, _glng, pid))
+            # notify if assigned_to changed (skip self-assignment)
             new_tech = data.get("assigned_to")
-            if new_tech and str(new_tech) != str(old.get("assigned_to") or ""):
-                run("INSERT INTO notifications (user_id,title,body,url) VALUES(?,?,?,?)",
-                    (int(new_tech), "Nuevo proyecto asignado",
-                     f"{data.get('name','')} — {data.get('client','')}",
-                     f"{BP}/projects/{pid}"))
+            if new_tech and str(new_tech) != str(old.get("assigned_to") or "") and int(new_tech) != sess["id"]:
+                _notify(int(new_tech), "Nuevo proyecto asignado",
+                        f"{data.get('name','')} — {data.get('client','')}",
+                        f"{BP}/projects/{pid}", "project_assigned",
+                        extra={"project": {
+                            "name": data.get("name",""),
+                            "client": data.get("client",""),
+                            "priority": data.get("priority","normal"),
+                            "due_date": data.get("due_date",""),
+                            "work_type": data.get("work_type","proyecto"),
+                        }})
             resp = {"ok": True}
             if closing:
                 t_row = q1("SELECT COUNT(*) t, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) d FROM tasks WHERE project_id=?", (pid,))
@@ -2441,11 +2604,42 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
             uid = int(m.group(1))
-            run("UPDATE users SET display_name=?,username=?,role=?,active=? WHERE id=?",
-                (data.get("display_name",""),data.get("username",""),
-                 data.get("role","technician"),1 if data.get("active",1) else 0,uid))
+            fn = (data.get("first_name","") or "").strip()
+            ln = (data.get("last_name","") or "").strip()
+            dn = (data.get("display_name","") or "").strip() or (fn + (" " + ln if ln else "")).strip()
+            run("UPDATE users SET display_name=?,username=?,role=?,active=?,email=?,show_in_planning=?,"
+                "first_name=?,last_name=?,phone=?,extension=? WHERE id=?",
+                (dn, data.get("username",""),
+                 data.get("role","technician"), 1 if data.get("active",1) else 0,
+                 (data.get("email","") or "").strip(),
+                 1 if data.get("show_in_planning",1) else 0,
+                 fn, ln,
+                 (data.get("phone","") or "").strip(),
+                 (data.get("extension","") or "").strip(),
+                 uid))
             if data.get("password"):
                 run("UPDATE users SET pw_hash=? WHERE id=?", (_hash(data["password"]),uid))
+            self._json(200, {"ok":True}); return
+
+        # settings
+        if rel == "/api/settings":
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            _allowed = {"smtp_host","smtp_port","smtp_user","smtp_pass","smtp_from","smtp_tls","notif_due_days"}
+            for k, v in data.items():
+                if k in _allowed:
+                    set_setting(k, str(v))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/notif_rules/([a-z_]+)$", rel)
+        if m:
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            ek = m.group(1)
+            if "notify_internal" in data:
+                run("UPDATE notif_rules SET notify_internal=? WHERE event_key=?",
+                    (1 if data["notify_internal"] else 0, ek))
+            if "notify_email" in data:
+                run("UPDATE notif_rules SET notify_email=? WHERE event_key=?",
+                    (1 if data["notify_email"] else 0, ek))
             self._json(200, {"ok":True}); return
 
         self._json(404, {"error":"Not found"})
@@ -2455,6 +2649,15 @@ class Handler(BaseHTTPRequestHandler):
         rel = p.path[len(BP):] if p.path.startswith(BP) and BP else p.path
         sess = _get_sess(self)
         if not sess: self._json(401, {"error":"Unauthorized"}); return
+
+        # notifications delete
+        if rel == "/api/notifications":
+            run("DELETE FROM notifications WHERE user_id=?", (sess["id"],))
+            self._json(200, {"ok":True}); return
+        m = re.match(r"^/api/notifications/(\d+)$", rel)
+        if m:
+            run("DELETE FROM notifications WHERE id=? AND user_id=?", (int(m.group(1)), sess["id"]))
+            self._json(200, {"ok":True}); return
 
         m = re.match(r"^/api/projects/(\d+)$", rel)
         if m:
@@ -2551,9 +2754,114 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json(404, {"error":"Not found"})
 
+# ── periodic notification job ─────────────────────────────────────────────────
+
+def _periodic_checks():
+    """Run every hour: check project due dates, overdue tasks, low stock."""
+    from core.notify import get_setting as _gs, _notify as _nf
+    today = _date.today()
+    try:
+        due_days = int(_gs("notif_due_days", "2") or "2")
+    except ValueError:
+        due_days = 2
+    deadline = today + timedelta(days=due_days)
+
+    # 1. Projects due soon
+    projects_due = rs(q(
+        """SELECT id, name, client, due_date, assigned_to, priority, work_type FROM projects
+           WHERE status NOT IN ('completed','cancelled')
+           AND due_date != '' AND due_date IS NOT NULL
+           AND date(due_date) <= ? AND date(due_date) >= ?
+           AND assigned_to IS NOT NULL""",
+        (str(deadline), str(today))
+    ))
+    for p in projects_due:
+        uid = p["assigned_to"]
+        url = f"{BP}/projects/{p['id']}"
+        due_str = p["due_date"][:10]
+        already = q1(
+            "SELECT id FROM notifications WHERE user_id=? AND url=? AND created_at > datetime('now','-20 hours')",
+            (uid, url)
+        )
+        if not already:
+            try:
+                days_left = (datetime.strptime(due_str, "%Y-%m-%d").date() - today).days
+            except Exception:
+                days_left = 0
+            _nf(uid, "Proyecto próximo a vencer",
+                f"{p['name']} — {p['client']} · vence {due_str}",
+                url, "project_due_soon",
+                extra={"project": {
+                    "name": p["name"], "client": p["client"],
+                    "due_date": due_str,
+                    "priority": p.get("priority","normal"),
+                    "work_type": p.get("work_type",""),
+                }, "days_left": days_left})
+
+    # 2. Overdue tasks (assigned project)
+    overdue_tasks = rs(q(
+        """SELECT t.id, t.title, t.due_date, p.id pid, p.name pname, p.assigned_to
+           FROM tasks t JOIN projects p ON p.id=t.project_id
+           WHERE t.status != 'done'
+           AND t.due_date != '' AND t.due_date IS NOT NULL
+           AND date(t.due_date) < ?
+           AND p.assigned_to IS NOT NULL""",
+        (str(today),)
+    ))
+    for t in overdue_tasks:
+        uid = t["assigned_to"]
+        url = f"{BP}/projects/{t['pid']}"
+        already = q1(
+            "SELECT id FROM notifications WHERE user_id=? AND body LIKE ? AND created_at > datetime('now','-20 hours')",
+            (uid, f"%{t['title'][:30]}%")
+        )
+        if not already:
+            _nf(uid, "Tarea vencida sin completar",
+                f"{t['title']} — {t['pname']} · venció {t['due_date'][:10]}",
+                url, "task_overdue",
+                extra={"task_name": t["title"], "project_name": t["pname"],
+                       "due_date": t["due_date"][:10]})
+
+    # 3. Low stock — notify all admin users
+    low_stock = rs(q(
+        "SELECT id, code, name, stock_warehouse, stock_min FROM materials "
+        "WHERE stock_min > 0 AND stock_warehouse <= stock_min"
+    ))
+    if low_stock:
+        admins = rs(q("SELECT id FROM users WHERE role='admin' AND active=1"))
+        for mat in low_stock:
+            url = f"{BP}/inventory"
+            body = f"{mat['name']} (cod.{mat['code']}) — stock: {mat['stock_warehouse']}, mínimo: {mat['stock_min']}"
+            for adm in admins:
+                already = q1(
+                    "SELECT id FROM notifications WHERE user_id=? AND body LIKE ? AND created_at > datetime('now','-20 hours')",
+                    (adm["id"], f"%{mat['name'][:20]}%")
+                )
+                if not already:
+                    _nf(adm["id"], "Material con stock bajo",
+                        body, url, "stock_low",
+                        extra={"material_name": mat["name"],
+                               "current_qty": mat["stock_warehouse"],
+                               "min_qty": mat["stock_min"]})
+
+
+def _start_periodic_job():
+    def _loop():
+        time.sleep(60)  # short delay on startup
+        while True:
+            try:
+                _periodic_checks()
+            except Exception as e:
+                print(f"[notify-job] error: {e}")
+            time.sleep(3600)
+    t = threading.Thread(target=_loop, daemon=True, name="notif-job")
+    t.start()
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     init_db()
+    _start_periodic_job()
     server = ThreadingHTTPServer(("", PORT), Handler)
     print(f"NuvoDesk v2 → http://localhost:{PORT}{BP}/  (admin/admin)")
     server.serve_forever()

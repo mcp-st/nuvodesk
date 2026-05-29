@@ -1,4 +1,69 @@
 """Login and misc pages."""
+
+# Brand mark SVG — D3: cloud outline (nuvo) + triple-ring LED pulse (link UP)
+_BRAND_SVG = (
+    '<svg viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%">'
+    '<path d="M9 31C6 31 4 28.8 4 26c0-2.8 2-5 4.8-5.3C9.2 15.8 13.5 12 18.6 12c3.1 0 5.9 1.4 7.8 3.5'
+    ' 1.5-1.4 3.5-2.3 5.7-2.3 4.4 0 8 3.4 8.2 7.7.1 0 .1 0 .2 0C43 21.2 46 24.2 46 28'
+    ' c0 2.8-2.2 3.8-5 3.8H9z" stroke="white" stroke-width="2.5" fill="rgba(255,255,255,.07)"/>'
+    '<line x1="27" y1="32" x2="27" y2="37" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round"/>'
+    '<circle cx="27" cy="44" r="10" stroke="#22c55e" stroke-width="1" fill="none" opacity=".2"/>'
+    '<circle cx="27" cy="44" r="6.5" stroke="#22c55e" stroke-width="1.5" fill="none" opacity=".45"/>'
+    '<circle cx="27" cy="44" r="3.5" fill="#22c55e"/>'
+    '</svg>'
+)
+
+_LOGIN_CSS = """
+body{display:flex;align-items:center;justify-content:center;min-height:100dvh;background:var(--bg)}
+.login-wrap{display:flex;width:min(900px,98vw);min-height:520px;border-radius:20px;overflow:hidden;
+  box-shadow:var(--shadow-lg);border:1px solid var(--border)}
+.login-brand{
+  flex:1;background:linear-gradient(145deg,#06101f 0%,#0c1f3d 55%,#0a2e56 100%);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:52px 44px;text-align:center;color:#fff;position:relative;overflow:hidden
+}
+.login-brand::before{
+  content:'';position:absolute;top:-80px;right:-80px;width:280px;height:280px;border-radius:50%;
+  background:radial-gradient(circle,rgba(0,150,214,.12) 0%,transparent 70%);pointer-events:none
+}
+.login-brand::after{
+  content:'';position:absolute;bottom:-60px;left:-60px;width:200px;height:200px;border-radius:50%;
+  background:radial-gradient(circle,rgba(34,197,94,.07) 0%,transparent 70%);pointer-events:none
+}
+.brand-mark{
+  width:76px;height:76px;background:rgba(255,255,255,.07);border-radius:20px;
+  display:flex;align-items:center;justify-content:center;
+  margin-bottom:24px;border:1px solid rgba(255,255,255,.1);padding:12px;
+  box-shadow:0 4px 20px rgba(0,0,0,.25)
+}
+.login-brand h2{font-size:2rem;font-weight:900;letter-spacing:-.6px;margin-bottom:4px;color:#fff}
+.login-brand .tagline{
+  font-size:.72rem;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;
+  color:#00bceb;margin:0;opacity:.9
+}
+.login-form-side{
+  width:min(380px,100%);background:var(--bg2);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:52px 44px
+}
+.form-logo{
+  width:40px;height:40px;background:linear-gradient(135deg,#06101f,#0a2e56);
+  border-radius:11px;display:flex;align-items:center;justify-content:center;
+  margin-bottom:18px;padding:7px;box-shadow:0 2px 8px rgba(6,16,31,.35)
+}
+.login-form-side h1{font-size:1.5rem;font-weight:800;margin-bottom:4px;letter-spacing:-.3px;text-align:center;color:var(--text)}
+.login-form-side .sub{color:var(--muted);font-size:.85rem;margin-bottom:28px;text-align:center}
+.login-form-side form{width:100%}
+.login-form-side .field{margin-bottom:14px}
+.login-form-side .field label{display:block;font-size:.8rem;font-weight:600;color:var(--text);margin-bottom:6px}
+.login-form-side .field input{width:100%;box-sizing:border-box}
+.login-form-side .btn-primary{width:100%;justify-content:center;margin-top:6px}
+@media(max-width:600px){
+  .login-brand{display:none}
+  .login-wrap{width:95vw;min-height:auto;border-radius:16px}
+  .login-form-side{width:100%;padding:36px 28px}
+}
+"""
 import os, json, re, mimetypes, calendar as _cal
 from datetime import datetime, date as _date, timedelta
 from core.db import PORT, BP, DATA_DIR, DB_PATH, FILES_DIR, q, q1, run, rs, r2d
@@ -18,72 +83,29 @@ def _login_page(err=""):
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NuvoDesk</title>
 <link rel="stylesheet" href="{BP}/assets/styles/app.css">
-<style>
-body{{
-  display:flex;align-items:center;justify-content:center;min-height:100dvh;
-  background:var(--bg);
-}}
-.login-wrap{{display:flex;width:min(900px,98vw);min-height:520px;border-radius:16px;overflow:hidden;box-shadow:var(--shadow-lg);border:1px solid var(--border)}}
-.login-brand{{
-  flex:1;background:#0f172a;
-  display:flex;flex-direction:column;align-items:center;justify-content:center;
-  padding:48px;text-align:center;color:#fff;
-}}
-.login-brand .brand-mark{{
-  width:72px;height:72px;background:rgba(255,255,255,.12);border-radius:16px;
-  display:flex;align-items:center;justify-content:center;
-  font-size:2.2rem;font-weight:900;margin-bottom:22px;
-  border:1px solid rgba(255,255,255,.2);
-}}
-.login-brand h2{{font-size:1.9rem;font-weight:800;letter-spacing:-.4px;margin-bottom:8px}}
-.login-brand p{{opacity:.92;font-size:.95rem;line-height:1.6;max-width:240px}}
-.login-brand .features{{margin-top:32px;text-align:left;width:100%;max-width:260px}}
-.login-brand .feat{{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:.87rem;opacity:.9}}
-.login-brand .feat-dot{{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.6);flex-shrink:0}}
-.login-form-side{{
-  width:min(380px,100%);background:var(--bg2);
-  display:flex;flex-direction:column;align-items:center;justify-content:center;
-  padding:48px 40px
-}}
-.login-form-side .form-logo{{
-  width:44px;height:44px;background:#0f172a;border-radius:12px;
-  display:flex;align-items:center;justify-content:center;
-  font-size:1.3rem;font-weight:900;color:#fff;margin-bottom:20px;
-}}
-.login-form-side h1{{font-size:1.5rem;font-weight:800;margin-bottom:4px;letter-spacing:-.3px;text-align:center}}
-.login-form-side .sub{{color:var(--muted);font-size:.85rem;margin-bottom:32px;text-align:center}}
-.login-form-side form{{width:100%}}
-.login-form-side .btn{{width:100%;justify-content:center;padding:12px;font-size:.9rem;margin-top:4px}}
-@media(max-width:600px){{
-  .login-brand{{display:none}}
-  .login-wrap{{width:95vw;min-height:auto}}
-  .login-form-side{{width:100%;padding:32px 24px}}
-}}
-</style>
+<style>{_LOGIN_CSS}</style>
 </head>
 <body>
 <div class="login-wrap">
   <div class="login-brand">
-    <div class="brand-mark">N</div>
+    <div class="brand-mark">{_BRAND_SVG}</div>
     <h2>NuvoDesk</h2>
-    <p>Gestión de proyectos de campo para equipos de telecomunicaciones</p>
-    <div class="features">
-      <div class="feat"><div class="feat-dot"></div>Seguimiento de proyectos en tiempo real</div>
-      <div class="feat"><div class="feat-dot"></div>Control de tiempos y jornadas</div>
-      <div class="feat"><div class="feat-dot"></div>Gestión de inventario y materiales</div>
-      <div class="feat"><div class="feat-dot"></div>App móvil disponible</div>
-    </div>
+    <p class="tagline">by Nuvolink</p>
   </div>
   <div class="login-form-side">
-    <div class="form-logo">N</div>
+    <div class="form-logo">{_BRAND_SVG}</div>
     <h1>Bienvenido</h1>
     <p class="sub">Accede a tu cuenta de NuvoDesk</p>
     {err_html}
     <form method="POST" action="{BP}/api/login">
-      <div class="field"><label>Usuario</label>
-        <input name="username" autofocus autocomplete="username" placeholder="Tu usuario"></div>
-      <div class="field"><label>Contraseña</label>
-        <input type="password" name="password" autocomplete="current-password" placeholder="••••••••"></div>
+      <div class="field">
+        <label>Usuario</label>
+        <input name="username" autofocus autocomplete="username">
+      </div>
+      <div class="field">
+        <label>Contraseña</label>
+        <input type="password" name="password" autocomplete="current-password">
+      </div>
       <button type="submit" class="btn btn-primary">Entrar →</button>
     </form>
   </div>
@@ -200,6 +222,72 @@ def _download_page(user):
 </div>
 """
     return _shell("download", user, content)
+
+
+def _set_password_page(token, err=""):
+    err_html = f'<div class="alert alert-red">{_esc(err)}</div>' if err else ""
+    return f"""<!doctype html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NuvoDesk — Activar cuenta</title>
+<link rel="stylesheet" href="{BP}/assets/styles/app.css">
+<style>{_LOGIN_CSS}</style>
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-brand">
+    <div class="brand-mark">{_BRAND_SVG}</div>
+    <h2>NuvoDesk</h2>
+    <p class="tagline">by Nuvolink</p>
+  </div>
+  <div class="login-form-side">
+    <div class="form-logo">{_BRAND_SVG}</div>
+    <h1>Activar cuenta</h1>
+    <p class="sub">Crea tu contraseña de acceso</p>
+    {err_html}
+    <div id="success-msg" class="alert" style="display:none;background:var(--green-dim,#f0fdf4);color:var(--green,#166534)">
+      Contraseña establecida. <a href="{BP}/login" style="font-weight:700">Ir al login →</a>
+    </div>
+    <form id="set-pw-form" style="width:100%">
+      <input type="hidden" id="sp-token" value="{_esc(token)}">
+      <div class="field">
+        <label>Nueva contraseña</label>
+        <input type="password" id="sp-pw" autocomplete="new-password" required minlength="6">
+      </div>
+      <div class="field">
+        <label>Repetir contraseña</label>
+        <input type="password" id="sp-pw2" autocomplete="new-password" required>
+      </div>
+      <button type="submit" class="btn btn-primary" id="sp-btn">Activar cuenta →</button>
+    </form>
+  </div>
+</div>
+<script>
+document.getElementById('set-pw-form').onsubmit=function(e){{
+  e.preventDefault();
+  var pw=document.getElementById('sp-pw').value;
+  var pw2=document.getElementById('sp-pw2').value;
+  if(pw!==pw2){{alert('Las contraseñas no coinciden.');return;}}
+  var token=document.getElementById('sp-token').value;
+  document.getElementById('sp-btn').disabled=true;
+  fetch('{BP}/api/set-password',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{token:token,password:pw}})}})
+  .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}})}})
+  .then(function(x){{
+    if(x.ok){{
+      document.getElementById('set-pw-form').style.display='none';
+      document.getElementById('success-msg').style.display='block';
+    }} else {{
+      alert(x.j.error||'Error al establecer la contraseña.');
+      document.getElementById('sp-btn').disabled=false;
+    }}
+  }});
+}};
+</script>
+</body></html>"""
 
 
 # ── HTTP handler ──────────────────────────────────────────────────────────────

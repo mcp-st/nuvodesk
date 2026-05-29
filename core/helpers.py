@@ -1,11 +1,30 @@
 """Pure utility functions and constants for NuvoDesk."""
-import hashlib, json, re, mimetypes, os
+import hashlib, hmac, json, re, mimetypes, os, base64
 from datetime import datetime
 from core.db import run
 
+_SCRYPT_N = 2**14
+_SCRYPT_R = 8
+_SCRYPT_P = 1
 
 def _hash(pw: str) -> str:
-    return hashlib.sha256(pw.encode()).hexdigest()
+    """Hash a password with scrypt + random salt. Returns base64-encoded salt||key."""
+    salt = os.urandom(16)
+    key = hashlib.scrypt(pw.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32)
+    return base64.b64encode(salt + key).decode()
+
+def _check_pw(pw: str, stored: str) -> bool:
+    """Verify password against stored hash (scrypt or legacy SHA-256 hex)."""
+    if len(stored) == 64 and all(c in "0123456789abcdef" for c in stored):
+        # legacy SHA-256 — accept but caller should upgrade
+        return hmac.compare_digest(hashlib.sha256(pw.encode()).hexdigest(), stored)
+    try:
+        raw = base64.b64decode(stored)
+        salt, key = raw[:16], raw[16:]
+        new_key = hashlib.scrypt(pw.encode(), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32)
+        return hmac.compare_digest(key, new_key)
+    except Exception:
+        return False
 
 def _esc(s) -> str:
     if s is None: return ""
