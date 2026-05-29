@@ -12,7 +12,7 @@ from core.db import (
     db, q, q1, run, rs, r2d, _dblock,
 )
 from core.helpers import (
-    _hash, _check_pw, _esc, _jattr, _now, _fmt_size, _fmt_duration,
+    _hash, _check_pw, _esc, _jattr, _now, _fmt_size,
     _parse_multipart, _stock_move,
     PROJ_COLORS, _pcolor, STATUS_LABEL, STATUS_COLOR, PRIORITY_COLOR,
     WORK_TYPES, _wt_badge, _badge, _pbadge,
@@ -264,6 +264,50 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN extension TEXT DEFAULT ''",
     "ALTER TABLE users ADD COLUMN reset_token TEXT DEFAULT NULL",
     "ALTER TABLE users ADD COLUMN reset_token_expiry TEXT DEFAULT NULL",
+    """CREATE TABLE IF NOT EXISTS activities (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        activity_date TEXT NOT NULL,
+        all_day       INTEGER NOT NULL DEFAULT 0,
+        hour_start    INTEGER,
+        hour_end      INTEGER,
+        type          TEXT NOT NULL DEFAULT 'physical',
+        notes         TEXT DEFAULT '',
+        created_by    INTEGER REFERENCES users(id),
+        created_at    TEXT DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS tech_availability (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        avail_date  TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'available',
+        notes       TEXT DEFAULT '',
+        UNIQUE(user_id, avail_date)
+    )""",
+    """CREATE TABLE IF NOT EXISTS work_logs (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        log_date    TEXT NOT NULL,
+        hours       REAL NOT NULL,
+        description TEXT DEFAULT '',
+        activity_id INTEGER REFERENCES activities(id) ON DELETE SET NULL,
+        created_by  INTEGER REFERENCES users(id),
+        created_at  TEXT DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS change_requests (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        activity_id    INTEGER NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+        requester_id   INTEGER NOT NULL REFERENCES users(id),
+        admin_id       INTEGER NOT NULL REFERENCES users(id),
+        type           TEXT NOT NULL,
+        message        TEXT NOT NULL,
+        status         TEXT NOT NULL DEFAULT 'pending',
+        admin_response TEXT DEFAULT '',
+        created_at     TEXT DEFAULT (datetime('now')),
+        resolved_at    TEXT
+    )""",
 ]
 
 def init_db():
@@ -353,23 +397,17 @@ def _project_detail(user, pid):
 
     pfiles = rs(q("""SELECT * FROM project_files WHERE project_id=? ORDER BY created_at DESC""", (pid,)))
 
-    # ── new: time entries, comments, extras, equipment ──
-    time_entries_all = rs(q("""SELECT te.*,u.display_name uname
-        FROM time_entries te JOIN users u ON u.id=te.user_id
-        WHERE te.project_id=? ORDER BY te.started_at DESC LIMIT 100""", (pid,)))
+    # ── new: work logs, comments, extras, equipment ──
+    work_logs_all = rs(q("""SELECT wl.*,u.display_name uname
+        FROM work_logs wl JOIN users u ON u.id=wl.user_id
+        WHERE wl.project_id=? ORDER BY wl.log_date DESC, wl.created_at DESC LIMIT 100""", (pid,)))
 
-    active_timer = r2d(q1("""SELECT * FROM time_entries
-        WHERE project_id=? AND user_id=? AND ended_at IS NULL""",
-        (pid, user['id'])))
-
-    time_summary_rows = rs(q("""SELECT u.display_name uname,
-        COUNT(*) entries,
-        COUNT(DISTINCT date(te.started_at)) days,
-        COALESCE(SUM(CASE WHEN te.ended_at IS NOT NULL
-            THEN (julianday(te.ended_at)-julianday(te.started_at))*86400 ELSE 0 END),0) total_secs
-        FROM time_entries te JOIN users u ON u.id=te.user_id
-        WHERE te.project_id=? AND te.ended_at IS NOT NULL
-        GROUP BY u.id ORDER BY total_secs DESC""", (pid,)))
+    wl_summary = rs(q("""SELECT u.display_name uname,
+        COUNT(*) entries, COUNT(DISTINCT wl.log_date) days,
+        COALESCE(SUM(wl.hours),0) total_hours
+        FROM work_logs wl JOIN users u ON u.id=wl.user_id
+        WHERE wl.project_id=?
+        GROUP BY wl.user_id ORDER BY total_hours DESC""", (pid,)))
 
     comments = rs(q("""SELECT wc.*,u.display_name uname
         FROM wo_comments wc JOIN users u ON u.id=wc.user_id
@@ -537,93 +575,52 @@ def _project_detail(user, pid):
             f'{"<div class=progress style=margin-top:8px><div class=progress-bar style=width:" + str(h_pct) + "%></div></div>" if h_est else ""}</div>')
 
     # ── build time tab HTML ──
-    time_summary_html = ""
-    for ts in time_summary_rows:
-        dur = _fmt_duration(ts['total_secs'])
-        time_summary_html += (f'<div class="time-card">'
+    wl_summary_html = ""
+    for ts in wl_summary:
+        wl_summary_html += (f'<div class="time-card">'
             f'<div class="tc-name">{_esc(ts["uname"])}</div>'
-            f'<div class="tc-hours">{dur}</div>'
+            f'<div class="tc-hours">{ts["total_hours"]:.1f}h</div>'
             f'<div class="tc-detail">{ts["days"]} días · {ts["entries"]} registros</div>'
             f'</div>')
 
-    te_rows = ""
-    for te in time_entries_all:
-        started = (te['started_at'] or '')[:16]
-        if te['ended_at']:
-            try:
-                from datetime import datetime as _dt2
-                dur = _fmt_duration((_dt2.fromisoformat(te['ended_at'])-_dt2.fromisoformat(te['started_at'])).total_seconds())
-            except Exception:
-                dur = '—'
-        else:
-            dur = '<span style="color:var(--green);font-weight:700">● En curso</span>'
-        type_lbl = {'work':'Trabajo','travel':'Desplazamiento','wait':'Espera'}.get(te.get('entry_type','work'), te.get('entry_type',''))
-        te_id = te['id']
-        del_btn = '' if te['ended_at'] is None else f'<button class="btn btn-danger btn-icon" onclick="delTimeEntry({te_id})">✕</button>'
-        te_rows += (f'<tr>'
-            f'<td class="muted" style="font-size:.75rem;white-space:nowrap">{_esc(started)}</td>'
-            f'<td>{_esc(te["uname"])}</td>'
-            f'<td><span class="chip" style="font-size:.7rem">{_esc(type_lbl)}</span></td>'
-            f'<td style="font-weight:700">{dur}</td>'
-            f'<td class="muted col-m-hide" style="font-size:.8rem">{_esc(te.get("notes","") or "")}</td>'
+    wl_rows = ""
+    for wl in work_logs_all:
+        can_del = (wl['user_id'] == user['id'] or user.get('role') == 'admin')
+        del_btn = f'<button class="btn btn-danger btn-icon" onclick="delWorkLog({wl["id"]})">✕</button>' if can_del else ''
+        wl_rows += (f'<tr>'
+            f'<td class="muted" style="font-size:.75rem;white-space:nowrap">{_esc(wl["log_date"])}</td>'
+            f'<td>{_esc(wl["uname"])}</td>'
+            f'<td style="font-weight:700">{wl["hours"]}h</td>'
+            f'<td class="muted col-m-hide" style="font-size:.8rem">{_esc(wl.get("description","") or "")}</td>'
             f'<td>{del_btn}</td></tr>')
 
-    if active_timer:
-        timer_start_html = '<div class="alert alert-green" style="margin-bottom:16px">⏱ Tienes una jornada activa en este proyecto — para el temporizador para guardarla.</div>'
-    else:
-        timer_start_html = f"""<div style="display:flex;align-items:flex-end;gap:12px;margin-bottom:20px;flex-wrap:wrap">
-  <div class="field" style="margin:0">
-    <label>Tipo</label>
-    <select id="te-type" style="width:auto">
-      <option value="work">🔧 Trabajo</option>
-      <option value="travel">🚗 Desplazamiento</option>
-      <option value="wait">⏳ Espera</option>
-    </select>
-  </div>
-  <div class="field" style="margin:0;flex:1;min-width:160px">
-    <label>Notas (opcional)</label>
-    <input id="te-notes" placeholder="Ej: instalación rack, configuración...">
-  </div>
-  <button class="timer-btn-start" onclick="startTimer()">▶ Iniciar jornada</button>
-</div>"""
-
     today_str = _date.today().isoformat()
-    time_tab_html = f"""{timer_start_html}
-<details style="margin-bottom:16px">
-  <summary style="cursor:pointer;font-size:.875rem;font-weight:600;color:var(--muted);padding:8px 0;user-select:none">
-    + Registrar horas manualmente
-  </summary>
-  <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;padding:12px 0 4px">
-    <div class="field" style="margin:0;flex:0 0 140px">
-      <label>Fecha</label>
-      <input type="date" id="ml-date" value="{today_str}">
-    </div>
-    <div class="field" style="margin:0;flex:0 0 100px">
-      <label>Horas</label>
-      <input type="number" id="ml-hours" min="0.25" step="0.25" value="1" placeholder="1.5">
-    </div>
-    <div class="field" style="margin:0">
-      <label>Tipo</label>
-      <select id="ml-type">
-        <option value="work">🔧 Trabajo</option>
-        <option value="travel">🚗 Desplazamiento</option>
-        <option value="wait">⏳ Espera</option>
-      </select>
-    </div>
-    <div class="field" style="margin:0;flex:1;min-width:160px">
-      <label>Notas</label>
-      <input id="ml-notes" placeholder="Descripción del trabajo...">
-    </div>
-    <button class="btn btn-primary btn-sm" onclick="addManualLog()">Registrar</button>
+    all_users_wl = rs(q("SELECT id,display_name FROM users WHERE active=1 AND role!='backoffice' ORDER BY display_name"))
+    user_opts_wl = "".join(f'<option value="{u["id"]}">{_esc(u["display_name"])}</option>' for u in all_users_wl)
+    time_tab_html = f"""
+<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px">
+  {f'<div class="field" style="margin:0"><label>Técnico</label><select id="wl-user">{user_opts_wl}</select></div>' if user.get("role")=="admin" else ""}
+  <div class="field" style="margin:0;flex:0 0 140px">
+    <label>Fecha</label>
+    <input type="date" id="wl-date" value="{today_str}">
   </div>
-</details>
-<div class="time-summary-grid">{time_summary_html or '<p class="muted" style="grid-column:1/-1;text-align:center;padding:20px">Sin registros de tiempo todavía</p>'}</div>
+  <div class="field" style="margin:0;flex:0 0 90px">
+    <label>Horas</label>
+    <input type="number" id="wl-hours" min="0.25" max="24" step="0.25" value="1">
+  </div>
+  <div class="field" style="margin:0;flex:1;min-width:140px">
+    <label>Descripción</label>
+    <input id="wl-desc" placeholder="Qué se hizo...">
+  </div>
+  <button class="btn btn-primary btn-sm" onclick="addWorkLog()">+ Registrar</button>
+</div>
+<div class="time-summary-grid">{wl_summary_html or '<p class="muted" style="grid-column:1/-1;text-align:center;padding:20px">Sin horas registradas todavía</p>'}</div>
 <div class="card">
-  <h3 style="margin-bottom:12px">Registro de jornadas</h3>
+  <h3 style="margin-bottom:12px">Horas registradas</h3>
   <div class="tbl-wrap"><table><thead><tr>
-    <th>Inicio</th><th>Técnico</th><th>Tipo</th><th>Duración</th>
-    <th class="col-m-hide">Notas</th><th></th>
-  </tr></thead><tbody>{te_rows or "<tr><td colspan='6' class='muted' style='text-align:center;padding:16px'>Sin registros</td></tr>"}</tbody></table></div>
+    <th>Fecha</th><th>Técnico</th><th>Horas</th>
+    <th class="col-m-hide">Descripción</th><th></th>
+  </tr></thead><tbody>{wl_rows or "<tr><td colspan='5' class='muted' style='text-align:center;padding:16px'>Sin registros</td></tr>"}</tbody></table></div>
 </div>"""
 
     # ── build extras tab HTML ──
@@ -712,35 +709,7 @@ def _project_detail(user, pid):
   <button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="addComment()">Enviar</button>
 </div>"""
 
-    # ── active timer banner ──
-    if active_timer:
-        started_iso = (active_timer.get('started_at') or '').replace(' ', 'T')
-        timer_banner_html = f"""
-<div class="timer-banner">
-  <div style="flex:1">
-    <div class="timer-lbl">⏱ Jornada activa</div>
-    <div class="timer-time" id="timer-elapsed">—</div>
-  </div>
-  <div>
-    <div style="font-size:.74rem;opacity:.75;margin-bottom:6px">Inicio: {_esc((active_timer.get('started_at') or '')[:16])}</div>
-    <button class="timer-btn-stop" onclick="stopTimer()">⏹ Parar jornada</button>
-  </div>
-</div>
-<script>
-(function(){{
-  var start=new Date("{started_iso}");
-  function tick(){{
-    var el=document.getElementById('timer-elapsed');
-    if(!el) return;
-    var diff=Math.floor((Date.now()-start.getTime())/1000);
-    var h=Math.floor(diff/3600),m=Math.floor((diff%3600)/60),s=diff%60;
-    el.textContent=(h>0?h+'h ':'')+String(m).padStart(2,'0')+'m '+String(s).padStart(2,'0')+'s';
-  }}
-  tick(); setInterval(tick,1000);
-}})();
-</script>"""
-    else:
-        timer_banner_html = ""
+    timer_banner_html = ""
 
     # ── kit recommendations tab ──
     _KIT_CATS = {
@@ -801,8 +770,8 @@ def _project_detail(user, pid):
     task_done = len([t for t in tasks if t['status'] == 'done'])
     task_total = len(tasks)
     task_pct = int(task_done / task_total * 100) if task_total else 0
-    total_secs = sum((ts.get('total_secs') or 0) for ts in time_summary_rows)
-    total_hours_fmt = _fmt_duration(total_secs)
+    total_hours = sum(wl.get('hours') or 0 for wl in work_logs_all)
+    total_hours_fmt = f"{total_hours:.1f}h" if total_hours else "0h"
     safe_proj = {k: v for k, v in p.items() if isinstance(v, (str, int, float, type(None)))}
     content = f"""
 <div style="margin-bottom:8px"><a href="{BP}/projects" class="muted" style="font-size:.85rem">← Proyectos</a></div>
@@ -845,12 +814,10 @@ def _project_detail(user, pid):
       <div class="l">Horas totales</div>
     </div>
     <div style="margin-left:auto">
-      {'<button class="btn btn-danger btn-sm" onclick="stopTimer()">⏹ Parar jornada</button>' if active_timer else '<button class="btn btn-primary btn-sm" onclick="startTimer()">▶ Iniciar jornada</button>'}
     </div>
   </div>
 </div>
 
-{timer_banner_html}
 
 <div class="tabs" style="overflow-x:auto">
   <button class="tab-btn active" onclick="showTab('trabajo',this)">Trabajo</button>
@@ -888,7 +855,7 @@ def _project_detail(user, pid):
 
 <div class="trabajo-side">
 <div class="time-section">
-  <h3 style="margin-bottom:14px;font-size:.95rem;font-weight:700">⏱ Tiempo</h3>
+  <h3 style="margin-bottom:14px;font-size:.95rem;font-weight:700">🕐 Horas registradas</h3>
   {time_tab_html}
 </div>
 <div class="comment-section">
@@ -1529,40 +1496,24 @@ function delFile(id){{
     .then(function(r){{if(r.ok)location.reload();}});
 }}
 
-// ── timer ──
-function startTimer(){{
-  var type=document.getElementById('te-type')?document.getElementById('te-type').value:'work';
-  var notes=document.getElementById('te-notes')?document.getElementById('te-notes').value:'';
-  fetch(bp+'/api/projects/'+pid+'/time/start',{{method:'POST',
-    headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{entry_type:type,notes:notes}})}})
-    .then(function(r){{
-      if(r.ok) location.reload();
-      else r.json().then(function(j){{alert(j.error||'Error al iniciar jornada');}});
-    }});
-}}
-function stopTimer(){{
-  fetch(bp+'/api/projects/'+pid+'/time/stop',{{method:'POST',
-    headers:{{'Content-Type':'application/json'}},body:'{{}}'}})
-    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
-}}
-function delTimeEntry(id){{
-  if(!confirm('¿Eliminar este registro de tiempo?')) return;
-  fetch(bp+'/api/time_entries/'+id,{{method:'DELETE'}})
-    .then(function(r){{if(r.ok)location.reload();}});
-}}
-function addManualLog(){{
-  var date=document.getElementById('ml-date').value;
-  var hours=parseFloat(document.getElementById('ml-hours').value);
+// ── work logs ──
+function addWorkLog(){{
+  var uid_el=document.getElementById('wl-user');
+  var date=document.getElementById('wl-date').value;
+  var hours=parseFloat(document.getElementById('wl-hours').value);
+  var desc=document.getElementById('wl-desc').value;
   if(!date||!hours||hours<=0){{alert('Fecha y horas son obligatorias');return;}}
-  fetch(bp+'/api/projects/'+pid+'/time/log',{{method:'POST',
-    headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{date:date,hours:hours,
-      entry_type:document.getElementById('ml-type').value,
-      notes:document.getElementById('ml-notes').value}})}})
-    .then(function(r){{return r.ok?r.json():r.json().then(function(j){{throw new Error(j.error||'Error');}});}})
-    .then(function(){{location.reload();}})
-    .catch(function(err){{alert(err.message);}});
+  var d={{project_id:pid,log_date:date,hours:hours,description:desc}};
+  if(uid_el) d.user_id=uid_el.value;
+  fetch(bp+'/api/work_logs',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
+    .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}});}})
+    .then(function(res){{if(!res.ok){{alert(res.j.error||'Error');return;}}location.reload();}});
+}}
+function delWorkLog(id){{
+  if(!confirm('¿Eliminar este registro de horas?')) return;
+  fetch(bp+'/api/work_logs/'+id,{{method:'DELETE'}})
+    .then(function(r){{if(r.ok)location.reload();}});
 }}
 
 // ── task photos ──
@@ -1736,8 +1687,7 @@ from web.pages.inventory import _inventory_page
 from web.pages.kit import _kit_page
 from web.pages.users import _users_page
 from web.pages.reports import _project_report, _project_report_md, _project_albaran
-from web.pages.calendar import _calendar_page, _calendar_day
-from web.pages.workload import _workload_page
+from web.pages.calendar import _calendar_page, _calendar_week, _calendar_day
 from web.pages.map import _map_page
 from web.pages.settings import _settings_page
 from web.pages.notifications import _notifications_page
@@ -1876,6 +1826,10 @@ class Handler(BaseHTTPRequestHandler):
         if rel == "/kit":
             self._send(200, _kit_page(sess)); return
         if rel == "/calendar":
+            view = qs.get("view", ["month"])[0]
+            if view == "week":
+                ws = qs.get("week_start", [""])[0]
+                self._send(200, _calendar_week(sess, ws)); return
             yr = int(qs.get("year",[_date.today().year])[0])
             mo = int(qs.get("month",[_date.today().month])[0])
             self._send(200, _calendar_page(sess, yr, mo)); return
@@ -1891,8 +1845,7 @@ class Handler(BaseHTTPRequestHandler):
             rules = rs(q("SELECT * FROM notif_rules ORDER BY event_key"))
             self._send(200, _settings_page(sess, rules)); return
         if rel == "/workload":
-            wk = qs.get("week",[""])[0]
-            self._send(200, _workload_page(sess, wk)); return
+            self._redirect(f"{BP}/calendar"); return
         if rel == "/map":
             self._send(200, _map_page(sess)); return
         if rel == "/notifications":
@@ -1968,6 +1921,99 @@ class Handler(BaseHTTPRequestHandler):
         if rel == "/api/kit":
             if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
             self._json(200, rs(q("SELECT k.*,m.name mat_name,m.code mat_code FROM tech_kit k JOIN materials m ON m.id=k.material_id"))); return
+
+        # activities
+        if rel == "/api/activities":
+            date_f = qs.get("date",[""])[0]
+            yr_f   = qs.get("year",[""])[0]
+            mo_f   = qs.get("month",[""])[0]
+            ws_f   = qs.get("week_start",[""])[0]
+            uid_f  = qs.get("user_id",[""])[0]
+            base_q = """SELECT a.*,u.display_name uname,p.name pname
+                FROM activities a
+                JOIN users u ON u.id=a.user_id
+                JOIN projects p ON p.id=a.project_id"""
+            conds, params = [], []
+            if sess.get("role") not in ("admin","backoffice"):
+                conds.append("a.user_id=?"); params.append(sess["id"])
+            elif uid_f:
+                conds.append("a.user_id=?"); params.append(int(uid_f))
+            if date_f:
+                conds.append("a.activity_date=?"); params.append(date_f)
+            elif ws_f:
+                try:
+                    ws = _date.fromisoformat(ws_f)
+                    we = str(ws + timedelta(days=6))
+                    conds.append("a.activity_date BETWEEN ? AND ?"); params += [ws_f, we]
+                except ValueError: pass
+            elif yr_f and mo_f:
+                from calendar import monthrange as _mr
+                _, dm = _mr(int(yr_f), int(mo_f))
+                d1 = f"{int(yr_f):04d}-{int(mo_f):02d}-01"
+                d2 = f"{int(yr_f):04d}-{int(mo_f):02d}-{dm:02d}"
+                conds.append("a.activity_date BETWEEN ? AND ?"); params += [d1, d2]
+            where = ("WHERE " + " AND ".join(conds)) if conds else ""
+            rows = rs(q(f"{base_q} {where} ORDER BY a.activity_date,a.hour_start,u.display_name",
+                        tuple(params)))
+            self._json(200, rows); return
+
+        # work logs
+        if rel == "/api/work_logs":
+            prj_f = qs.get("project_id",[""])[0]
+            ws_f  = qs.get("week_start",[""])[0]
+            uid_f = qs.get("user_id",[""])[0]
+            base_q = """SELECT wl.*,u.display_name uname,p.name pname
+                FROM work_logs wl
+                JOIN users u ON u.id=wl.user_id
+                JOIN projects p ON p.id=wl.project_id"""
+            conds, params = [], []
+            if sess.get("role") not in ("admin","backoffice"):
+                conds.append("wl.user_id=?"); params.append(sess["id"])
+            elif uid_f:
+                conds.append("wl.user_id=?"); params.append(int(uid_f))
+            if prj_f:
+                conds.append("wl.project_id=?"); params.append(int(prj_f))
+            if ws_f:
+                try:
+                    ws = _date.fromisoformat(ws_f)
+                    we = str(ws + timedelta(days=6))
+                    conds.append("wl.log_date BETWEEN ? AND ?"); params += [ws_f, we]
+                except ValueError: pass
+            where = ("WHERE " + " AND ".join(conds)) if conds else ""
+            rows = rs(q(f"{base_q} {where} ORDER BY wl.log_date,u.display_name",
+                        tuple(params)))
+            self._json(200, rows); return
+
+        # tech availability
+        if rel == "/api/tech_availability":
+            yr_f = qs.get("year",[""])[0]
+            mo_f = qs.get("month",[""])[0]
+            ws_f = qs.get("week_start",[""])[0]
+            conds, params = [], []
+            if yr_f and mo_f:
+                from calendar import monthrange as _mr2
+                _, dm = _mr2(int(yr_f), int(mo_f))
+                d1 = f"{int(yr_f):04d}-{int(mo_f):02d}-01"
+                d2 = f"{int(yr_f):04d}-{int(mo_f):02d}-{dm:02d}"
+                conds.append("avail_date BETWEEN ? AND ?"); params += [d1, d2]
+            elif ws_f:
+                try:
+                    ws = _date.fromisoformat(ws_f)
+                    we = str(ws + timedelta(days=6))
+                    conds.append("avail_date BETWEEN ? AND ?"); params += [ws_f, we]
+                except ValueError: pass
+            where = ("WHERE " + " AND ".join(conds)) if conds else ""
+            self._json(200, rs(q(f"SELECT * FROM tech_availability {where} ORDER BY avail_date",
+                                  tuple(params)))); return
+
+        # project work logs
+        m = re.match(r"^/api/projects/(\d+)/work_logs$", rel)
+        if m:
+            pid = int(m.group(1))
+            rows = rs(q("""SELECT wl.*,u.display_name uname FROM work_logs wl
+                JOIN users u ON u.id=wl.user_id
+                WHERE wl.project_id=? ORDER BY wl.log_date DESC,u.display_name""", (pid,)))
+            self._json(200, rows); return
 
         if rel == "/api/search":
             q_str = (qs.get("q",[""])[0] or "").strip()
@@ -2070,20 +2116,143 @@ class Handler(BaseHTTPRequestHandler):
 
         data = _body(self)
 
-        # schedule slots
-        if rel == "/api/schedule_slots":
-            uid = int(data.get("user_id") or 0)
-            prj = int(data.get("project_id") or 0)
-            sd  = (data.get("slot_date","") or "").strip()
-            hs  = int(data.get("hour_start") or 0)
-            he  = int(data.get("hour_end") or 0)
-            if not uid or not prj or not sd or he <= hs:
-                self._json(400, {"error":"Datos inválidos"}); return
-            sid = run("""INSERT INTO schedule_slots
-                (user_id,project_id,slot_date,hour_start,hour_end,notes)
-                VALUES(?,?,?,?,?,?)""",
-                (uid, prj, sd, hs, he, data.get("notes","")))
-            self._json(201, {"id":sid}); return
+        # activities
+        if rel == "/api/activities":
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            uid   = int(data.get("user_id") or 0)
+            prj   = int(data.get("project_id") or 0)
+            adate = (data.get("activity_date","") or "").strip()
+            if not uid or not prj or not adate:
+                self._json(400, {"error":"Usuario, proyecto y fecha requeridos"}); return
+            all_day = 1 if data.get("all_day") else 0
+            hs_raw = data.get("hour_start"); he_raw = data.get("hour_end")
+            hs = int(hs_raw) if hs_raw is not None else None
+            he = int(he_raw) if he_raw is not None else None
+            if not all_day and (hs is None or he is None or he <= hs):
+                self._json(400, {"error":"Horas inicio y fin requeridas (fin > inicio)"}); return
+            atype = data.get("type","physical") or "physical"
+            if atype not in ("physical","online","meeting","travel","other"):
+                self._json(400, {"error":"Tipo inválido"}); return
+            existing = rs(q("""SELECT a.id,p.name pname,a.hour_start,a.hour_end,a.all_day
+                FROM activities a JOIN projects p ON p.id=a.project_id
+                WHERE a.user_id=? AND a.activity_date=?""", (uid, adate)))
+            for ex in existing:
+                urow = r2d(q1("SELECT display_name FROM users WHERE id=?", (uid,)))
+                uname = urow["display_name"] if urow else str(uid)
+                if all_day or ex["all_day"]:
+                    self._json(409, {"error":f"Conflicto: {uname} ya tiene actividad ese día"}); return
+                if hs < (ex["hour_end"] or 0) and he > (ex["hour_start"] or 0):
+                    self._json(409, {"error":
+                        f"Conflicto: {uname} ya tiene '{ex['pname']}' "
+                        f"de {ex['hour_start']:02d}:00 a {ex['hour_end']:02d}:00 ese día"}); return
+            warning = None
+            avail = r2d(q1("SELECT status FROM tech_availability WHERE user_id=? AND avail_date=?",
+                           (uid, adate)))
+            if avail and avail["status"] == "traveling" and atype == "physical":
+                warning = "El técnico está desplazado ese día"
+            aid = run("""INSERT INTO activities
+                (user_id,project_id,activity_date,all_day,hour_start,hour_end,type,notes,created_by)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+                (uid, prj, adate, all_day, hs, he, atype, data.get("notes",""), sess["id"]))
+            if int(uid) != sess["id"]:
+                prow = r2d(q1("SELECT name FROM projects WHERE id=?", (prj,)))
+                _notify(uid, "Nueva actividad planificada",
+                        f"{prow['name'] if prow else prj} · {adate}",
+                        f"{BP}/calendar/{adate}", "activity_assigned")
+            resp = {"id": aid}
+            if warning: resp["warning"] = warning
+            self._json(201, resp); return
+
+        # work logs
+        if rel == "/api/work_logs":
+            uid_raw = data.get("user_id")
+            if sess.get("role") == "admin":
+                uid = int(uid_raw or sess["id"])
+            else:
+                uid = sess["id"]
+            prj      = int(data.get("project_id") or 0)
+            log_date = (data.get("log_date","") or "").strip()
+            hours    = float(data.get("hours") or 0)
+            if not prj or not log_date or hours <= 0 or hours > 24:
+                self._json(400, {"error":"Proyecto, fecha y horas válidas (0–24) requeridos"}); return
+            act_id = data.get("activity_id")
+            wid = run("""INSERT INTO work_logs
+                (user_id,project_id,log_date,hours,description,activity_id,created_by)
+                VALUES(?,?,?,?,?,?,?)""",
+                (uid, prj, log_date, hours, data.get("description",""),
+                 int(act_id) if act_id else None, sess["id"]))
+            self._json(201, {"id": wid}); return
+
+        # tech availability
+        if rel == "/api/tech_availability":
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            uid        = int(data.get("user_id") or 0)
+            avail_date = (data.get("avail_date","") or "").strip()
+            status     = data.get("status","available") or "available"
+            if not uid or not avail_date:
+                self._json(400, {"error":"Usuario y fecha requeridos"}); return
+            if status not in ("available","remote","traveling","off"):
+                self._json(400, {"error":"Estado inválido"}); return
+            run("""INSERT INTO tech_availability (user_id,avail_date,status,notes)
+                VALUES(?,?,?,?)
+                ON CONFLICT(user_id,avail_date) DO UPDATE
+                SET status=excluded.status, notes=excluded.notes""",
+                (uid, avail_date, status, data.get("notes","")))
+            self._json(200, {"ok": True}); return
+
+        # change requests — create
+        if rel == "/api/change_requests":
+            act_id = int(data.get("activity_id") or 0)
+            if not act_id: self._json(400, {"error":"activity_id requerido"}); return
+            act = r2d(q1("SELECT * FROM activities WHERE id=?", (act_id,)))
+            if not act: self._json(404, {"error":"Actividad no encontrada"}); return
+            if sess.get("role") != "admin" and act["user_id"] != sess["id"]:
+                self._json(403, {"error":"Forbidden"}); return
+            if q1("SELECT id FROM change_requests WHERE activity_id=? AND status='pending'", (act_id,)):
+                self._json(400, {"error":"Ya existe una solicitud pendiente para esta actividad"}); return
+            req_type = (data.get("type","") or "").strip()
+            msg      = (data.get("message","") or "").strip()
+            if req_type not in ("cancel","reschedule","modify") or not msg:
+                self._json(400, {"error":"Tipo y mensaje requeridos"}); return
+            admin_id = act["created_by"] or 1
+            crid = run("""INSERT INTO change_requests
+                (activity_id,requester_id,admin_id,type,message)
+                VALUES(?,?,?,?,?)""",
+                (act_id, sess["id"], admin_id, req_type, msg))
+            req_row = r2d(q1("SELECT display_name FROM users WHERE id=?", (sess["id"],)))
+            prow    = r2d(q1("SELECT name FROM projects WHERE id=?", (act["project_id"],)))
+            type_lbl = {"cancel":"Cancelar","reschedule":"Reagendar","modify":"Modificar"}.get(req_type, req_type)
+            _notify(admin_id, f"Solicitud de cambio: {type_lbl}",
+                    f"{req_row['display_name'] if req_row else '?'} · "
+                    f"{prow['name'] if prow else '?'} · {act['activity_date']}",
+                    f"{BP}/calendar/{act['activity_date']}", "change_request",
+                    extra={"change_request_id": crid})
+            self._json(201, {"id": crid}); return
+
+        # change requests — resolve
+        m = re.match(r"^/api/change_requests/(\d+)/resolve$", rel)
+        if m:
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            crid = int(m.group(1))
+            cr   = r2d(q1("SELECT * FROM change_requests WHERE id=?", (crid,)))
+            if not cr: self._json(404, {"error":"No encontrada"}); return
+            if cr["status"] != "pending": self._json(400, {"error":"Ya resuelta"}); return
+            action = data.get("action","")
+            if action not in ("approve","reject"):
+                self._json(400, {"error":"action debe ser approve o reject"}); return
+            new_status = "approved" if action == "approve" else "rejected"
+            run("UPDATE change_requests SET status=?,admin_response=?,resolved_at=datetime('now') WHERE id=?",
+                (new_status, data.get("response",""), crid))
+            if new_status == "approved" and cr["type"] == "cancel":
+                run("DELETE FROM activities WHERE id=?", (cr["activity_id"],))
+            act = r2d(q1("SELECT activity_date,project_id FROM activities WHERE id=?",
+                         (cr["activity_id"],))) or {}
+            prow = r2d(q1("SELECT name FROM projects WHERE id=?", (act.get("project_id"),))) if act else None
+            decision = "aprobada" if new_status == "approved" else "rechazada"
+            _notify(cr["requester_id"], f"Solicitud de cambio {decision}",
+                    f"{prow['name'] if prow else ''} · {act.get('activity_date','')}",
+                    f"{BP}/calendar/{act.get('activity_date','')}", "change_request_resolved")
+            self._json(200, {"ok": True}); return
 
         # projects
         if rel == "/api/projects":
@@ -2119,45 +2288,6 @@ class Handler(BaseHTTPRequestHandler):
                             "work_type": wt,
                         }})
             self._json(201, {"id":pid}); return
-
-        # time tracking
-        m = re.match(r"^/api/projects/(\d+)/time/start$", rel)
-        if m:
-            pid = int(m.group(1))
-            open_entry = r2d(q1("SELECT id FROM time_entries WHERE user_id=? AND ended_at IS NULL", (sess["id"],)))
-            if open_entry:
-                self._json(400, {"error":"Ya tienes una jornada activa — párala primero"}); return
-            eid = run("""INSERT INTO time_entries (project_id,user_id,started_at,entry_type,notes)
-                VALUES(?,?,datetime('now'),?,?)""",
-                (pid, sess["id"], data.get("entry_type","work"), data.get("notes","")))
-            self._json(201, {"id":eid}); return
-
-        m = re.match(r"^/api/projects/(\d+)/time/stop$", rel)
-        if m:
-            pid = int(m.group(1))
-            open_entry = r2d(q1("SELECT id FROM time_entries WHERE project_id=? AND user_id=? AND ended_at IS NULL",
-                (pid, sess["id"])))
-            if not open_entry:
-                self._json(400, {"error":"No hay jornada activa en este proyecto"}); return
-            run("UPDATE time_entries SET ended_at=datetime('now') WHERE id=?", (open_entry["id"],))
-            self._json(200, {"ok":True}); return
-
-        m = re.match(r"^/api/projects/(\d+)/time/log$", rel)
-        if m:
-            pid = int(m.group(1))
-            date_str = (data.get("date") or "").strip()
-            hours = float(data.get("hours") or 0)
-            if not date_str or hours <= 0:
-                self._json(400, {"error":"Fecha y horas requeridas"}); return
-            start_dt = datetime.fromisoformat(f"{date_str}T08:00:00")
-            end_dt   = start_dt + timedelta(hours=hours)
-            eid = run("""INSERT INTO time_entries (project_id,user_id,started_at,ended_at,entry_type,notes)
-                VALUES(?,?,?,?,?,?)""",
-                (pid, sess["id"],
-                 start_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                 end_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                 data.get("entry_type","work"), data.get("notes","")))
-            self._json(201, {"id":eid}); return
 
         # task photos upload
         m = re.match(r"^/api/tasks/(\d+)/photos$", rel)
@@ -2532,12 +2662,10 @@ class Handler(BaseHTTPRequestHandler):
                         }})
             resp = {"ok": True}
             if closing:
-                t_row = q1("SELECT COUNT(*) t, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) d FROM tasks WHERE project_id=?", (pid,))
-                h_row = q1("SELECT COALESCE(SUM(hours),0), COALESCE(SUM(estimated_hours),0) FROM project_logs pl, projects p WHERE pl.project_id=? AND p.id=?", (pid,pid))
-                timer_row = q1("""SELECT COALESCE(SUM(CASE WHEN ended_at IS NOT NULL
-                    THEN (julianday(ended_at)-julianday(started_at))*3600 ELSE 0 END),0)
-                    FROM time_entries WHERE project_id=? AND ended_at IS NOT NULL""", (pid,))
-                est_h = float(data.get("estimated_hours") or 0)
+                t_row  = q1("SELECT COUNT(*) t, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) d FROM tasks WHERE project_id=?", (pid,))
+                h_row  = q1("SELECT COALESCE(SUM(hours),0) FROM project_logs WHERE project_id=?", (pid,))
+                wl_row = q1("SELECT COALESCE(SUM(hours),0) FROM work_logs WHERE project_id=?", (pid,))
+                est_h  = float(data.get("estimated_hours") or 0)
                 resp["closing_summary"] = {
                     "pid": pid,
                     "name": data.get("name",""),
@@ -2545,7 +2673,7 @@ class Handler(BaseHTTPRequestHandler):
                     "tasks_total": int((t_row[0] or 0)),
                     "hours_estimated": est_h,
                     "hours_logged": float(h_row[0] or 0) if h_row else 0,
-                    "hours_timer": round(float(timer_row[0] or 0) / 3600, 1) if timer_row else 0,
+                    "hours_timer": float(wl_row[0] or 0) if wl_row else 0,
                 }
             self._json(200, resp); return
 
@@ -2568,6 +2696,24 @@ class Handler(BaseHTTPRequestHandler):
             done = 1 if data.get("done") else 0
             run("UPDATE task_checklist SET done=? WHERE id=?", (done, cid))
             self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/work_logs/(\d+)$", rel)
+        if m:
+            wid = int(m.group(1))
+            wl  = r2d(q1("SELECT * FROM work_logs WHERE id=?", (wid,)))
+            if not wl: self._json(404, {"error":"No encontrado"}); return
+            if sess.get("role") != "admin" and wl["user_id"] != sess["id"]:
+                self._json(403, {"error":"Forbidden"}); return
+            hours = float(data.get("hours") or 0)
+            if hours <= 0 or hours > 24:
+                self._json(400, {"error":"Horas inválidas (0–24)"}); return
+            run("UPDATE work_logs SET hours=?,description=?,log_date=?,project_id=?,activity_id=? WHERE id=?",
+                (hours, data.get("description",""),
+                 data.get("log_date", wl["log_date"]),
+                 int(data.get("project_id") or wl["project_id"]),
+                 int(data["activity_id"]) if data.get("activity_id") else None,
+                 wid))
+            self._json(200, {"ok": True}); return
 
         m = re.match(r"^/api/materials/(\d+)$", rel)
         if m:
@@ -2708,7 +2854,8 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             # delete NOT NULL FK rows (cascade-like)
             for tbl_col in [("project_members","user_id"),("tech_kit","user_id"),
-                            ("schedule_slots","user_id"),("time_entries","user_id"),
+                            ("activities","user_id"),("work_logs","user_id"),
+                            ("tech_availability","user_id"),("change_requests","requester_id"),
                             ("notifications","user_id")]:
                 try:
                     run(f"DELETE FROM {tbl_col[0]} WHERE {tbl_col[1]}=?", (uid,))
@@ -2721,9 +2868,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": f"No se puede eliminar: {ex}. Desactiva el usuario en su lugar."})
             return
 
-        m = re.match(r"^/api/schedule_slots/(\d+)$", rel)
+        m = re.match(r"^/api/activities/(\d+)$", rel)
         if m:
-            run("DELETE FROM schedule_slots WHERE id=?", (int(m.group(1)),))
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            run("DELETE FROM activities WHERE id=?", (int(m.group(1)),))
             self._json(200, {"ok":True}); return
 
         m = re.match(r"^/api/project_files/(\d+)$", rel)
@@ -2736,12 +2884,12 @@ class Handler(BaseHTTPRequestHandler):
                 run("DELETE FROM project_files WHERE id=?", (int(m.group(1)),))
             self._json(200, {"ok":True}); return
 
-        m = re.match(r"^/api/time_entries/(\d+)$", rel)
+        m = re.match(r"^/api/work_logs/(\d+)$", rel)
         if m:
-            eid = int(m.group(1))
-            te = r2d(q1("SELECT * FROM time_entries WHERE id=?", (eid,)))
-            if te and (te['user_id'] == sess['id'] or sess.get('role') == 'admin'):
-                run("DELETE FROM time_entries WHERE id=?", (eid,))
+            wid = int(m.group(1))
+            wl = r2d(q1("SELECT * FROM work_logs WHERE id=?", (wid,)))
+            if wl and (wl['user_id'] == sess['id'] or sess.get('role') == 'admin'):
+                run("DELETE FROM work_logs WHERE id=?", (wid,))
             self._json(200, {"ok":True}); return
 
         m = re.match(r"^/api/task_photos/(\d+)$", rel)

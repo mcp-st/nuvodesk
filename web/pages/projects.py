@@ -345,7 +345,6 @@ function showClosingModal(s){{
   document.getElementById('cm-tasks').textContent=s.tasks_done+'/'+s.tasks_total+' ('+pct+'%)';
   document.getElementById('cm-est').textContent=s.hours_estimated?s.hours_estimated+'h':'—';
   document.getElementById('cm-timer').textContent=s.hours_timer?s.hours_timer+'h':'—';
-  document.getElementById('cm-logged').textContent=s.hours_logged?s.hours_logged+'h':'—';
   document.getElementById('cm-report').href=bp+'/projects/'+s.pid+'/report';
   document.getElementById('cm-albaran').href=bp+'/projects/'+s.pid+'/albaran';
   document.getElementById('cm-view').href=bp+'/projects/'+s.pid;
@@ -370,8 +369,7 @@ function showClosingModal(s){{
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;font-size:.875rem">
       <span style="color:var(--muted)">Tareas completadas</span><span id="cm-tasks" class="fw7"></span>
       <span style="color:var(--muted)">Horas estimadas</span><span id="cm-est" class="fw7"></span>
-      <span style="color:var(--muted)">Horas (temporizador)</span><span id="cm-timer" class="fw7"></span>
-      <span style="color:var(--muted)">Horas (diario)</span><span id="cm-logged" class="fw7"></span>
+      <span style="color:var(--muted)">Horas registradas</span><span id="cm-timer" class="fw7"></span>
     </div>
   </div>
   <div style="background:var(--bg3);border-radius:8px;padding:14px;margin-bottom:16px">

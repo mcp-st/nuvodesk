@@ -1,6 +1,6 @@
 """Shell layout and navigation for NuvoDesk."""
 import json
-from core.db import BP, q1, r2d
+from core.db import BP
 from core.helpers import _esc
 
 # D3 brand mark: cloud outline (nuvo) + triple-ring LED pulse (link UP)
@@ -21,7 +21,6 @@ _LOGO_SVG = (
 _NAV_ICONS = {
     "dashboard":  '<svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
     "projects":   '<svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="12" y2="17"/></svg>',
-    "workload":   '<svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
     "calendar":   '<svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
     "inventory":  '<svg class="icon" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27,6.96 12,12.01 20.73,6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
     "kit":        '<svg class="icon" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
@@ -36,7 +35,6 @@ def _shell(page, user, content, extra_head=""):
     nav = [
         ("dashboard", f"{bp}/",          "Dashboard"),
         ("projects",  f"{bp}/projects",  "Proyectos"),
-        ("workload",  f"{bp}/workload",  "Cargas"),
         ("calendar",  f"{bp}/calendar",  "Calendario"),
         ("inventory", f"{bp}/inventory", "Inventario"),
         ("kit",       f"{bp}/kit",       "Kit campo"),
@@ -45,7 +43,7 @@ def _shell(page, user, content, extra_head=""):
         ("settings",  f"{bp}/settings",  "Configuración"),
         ("download",  f"{bp}/download",  "App móvil"),
     ]
-    _BOTTOM_NAV_KEYS = {"dashboard", "projects", "calendar", "inventory", "workload"}
+    _BOTTOM_NAV_KEYS = {"dashboard", "projects", "calendar", "inventory"}
 
     sidebar_links = ""
     bottom_links = ""
@@ -74,51 +72,7 @@ def _shell(page, user, content, extra_head=""):
     initial  = _esc((user.get("display_name","?") or "?")[0].upper())
     uname    = _esc(user.get("display_name",""))
 
-    # Active timer indicator
-    active_te = r2d(q1("""SELECT te.id, te.started_at, te.project_id,
-        p.name pname FROM time_entries te
-        JOIN projects p ON p.id=te.project_id
-        WHERE te.user_id=? AND te.ended_at IS NULL
-        LIMIT 1""", (user.get("id"),))) if user.get("id") else None
-
-    if active_te:
-        started_iso = (active_te.get("started_at") or "").replace(" ", "T")
-        pname_esc   = _esc((active_te.get("pname") or "")[:28])
-        te_pid      = active_te.get("project_id", 0)
-        timer_widget = f"""
-<div class="sidebar-timer" id="sidebar-timer">
-  <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-    <span class="timer-pulse"></span>
-    <span style="font-size:.7rem;font-weight:700;color:var(--green,#15803d);text-transform:uppercase;letter-spacing:.05em">Jornada activa</span>
-  </div>
-  <div style="font-size:.78rem;font-weight:600;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="{pname_esc}">{pname_esc}</div>
-  <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
-    <span id="st-elapsed" style="font-size:.85rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--green,#15803d)">—</span>
-    <button onclick="stopTimerGlobal({te_pid})" class="btn btn-sm" style="padding:2px 8px;font-size:.72rem;background:var(--red,#dc2626);color:#fff;border:none;border-radius:4px;cursor:pointer">⏹ Parar</button>
-  </div>
-</div>
-<script>
-(function(){{
-  var start=new Date("{started_iso}");
-  function tick(){{
-    var el=document.getElementById('st-elapsed');
-    if(!el) return;
-    var diff=Math.floor((Date.now()-start.getTime())/1000);
-    var h=Math.floor(diff/3600),m=Math.floor((diff%3600)/60),s=diff%60;
-    el.textContent=(h>0?h+'h ':'')+String(m).padStart(2,'0')+'m '+String(s).padStart(2,'0')+'s';
-  }}
-  tick(); setInterval(tick,1000);
-}})();
-function stopTimerGlobal(pid){{
-  var btn=document.querySelector('#sidebar-timer button');
-  if(btn){{ btn.disabled=true; btn.textContent='Parando…'; }}
-  fetch(bp+'/api/projects/'+pid+'/time/stop',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:'{{}}'}})
-    .then(function(){{ location.reload(); }})
-    .catch(function(){{ if(btn){{ btn.disabled=false; btn.textContent='⏹ Parar'; }} }});
-}}
-</script>"""
-    else:
-        timer_widget = ""
+    timer_widget = ""
 
     return f"""<!doctype html>
 <html lang="es" data-theme="light">
