@@ -6,6 +6,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote_plus
 from datetime import datetime, date as _date, timedelta
 
+_login_fails: dict = {}   # {username: {"count": int, "locked_until": float}}
+_LOCKOUT_THRESHOLD = 5    # intentos fallidos antes de bloquear
+_LOCKOUT_SECONDS   = 300  # 5 minutos de bloqueo
+_BLOCKED_EXTS = {         # extensiones ejecutables bloqueadas en uploads
+    ".php", ".py", ".sh", ".rb", ".pl", ".asp", ".aspx",
+    ".jsp", ".cgi", ".exe", ".bat", ".cmd", ".ps1",
+    ".htaccess", ".htpasswd",
+}
+
 from core.db import (
     PORT, BP, DATA_DIR, DB_PATH, FILES_DIR,
     new_sess as _new_sess, get_sess as _get_sess, del_sess as _del_sess,
@@ -1749,6 +1758,9 @@ class Handler(BaseHTTPRequestHandler):
             os.makedirs(proj_dir, exist_ok=True)
             for _field, fobj in files.items():
                 orig = fobj['filename'] or 'archivo'
+                ext = os.path.splitext(orig)[1].lower()
+                if ext in _BLOCKED_EXTS:
+                    self._json(400, {"error": f"Tipo de archivo no permitido: {ext}"}); return
                 safe = re.sub(r'[^\w\.\-]', '_', orig)[:180]
                 stored = f"{secrets.token_hex(8)}_{safe}"
                 path = os.path.join(proj_dir, stored)
@@ -2092,6 +2104,8 @@ class Handler(BaseHTTPRequestHandler):
             pw = (data.get("password","") or "").strip()
             if not token or not pw:
                 self._json(400, {"error":"Datos incompletos"}); return
+            if len(pw) < 8:
+                self._json(400, {"error":"La contraseña debe tener al menos 8 caracteres"}); return
             row = r2d(q1("SELECT id,reset_token_expiry FROM users WHERE reset_token=?", (token,)))
             if not row:
                 self._json(400, {"error":"Enlace inválido o expirado"}); return
@@ -2107,9 +2121,16 @@ class Handler(BaseHTTPRequestHandler):
             data = _body(self)
             un = (data.get("username","") or "").strip()
             pw = data.get("password","") or ""
+            fail_entry = _login_fails.get(un, {})
+            if fail_entry.get("locked_until", 0) > time.time():
+                self._send(200, _login_page("Demasiados intentos fallidos. Espera 5 minutos.")); return
             u = r2d(q1("SELECT * FROM users WHERE username=? AND active=1", (un,)))
             if not u or not _check_pw(pw, u["pw_hash"]):
+                count = fail_entry.get("count", 0) + 1
+                locked = time.time() + _LOCKOUT_SECONDS if count >= _LOCKOUT_THRESHOLD else 0
+                _login_fails[un] = {"count": count, "locked_until": locked}
                 self._send(200, _login_page("Usuario o contraseña incorrectos")); return
+            _login_fails.pop(un, None)
             # upgrade legacy SHA-256 hash to scrypt on successful login
             if len(u["pw_hash"]) == 64:
                 run("UPDATE users SET pw_hash=? WHERE id=?", (_hash(pw), u["id"]))
@@ -2319,6 +2340,10 @@ class Handler(BaseHTTPRequestHandler):
                 saved = []
                 for _, fobj in files.items():
                     orig = fobj.get('filename') or 'foto.jpg'
+                    ext = os.path.splitext(orig)[1].lower()
+                    mime_check = fobj.get('mime','') or mimetypes.guess_type(orig)[0] or ''
+                    if ext in _BLOCKED_EXTS or not mime_check.startswith('image/'):
+                        self._json(400, {"error": "Solo se permiten imágenes en fotos de tarea"}); return
                     safe = re.sub(r'[^\w\.\-]', '_', orig)[:120]
                     stored = f"{secrets.token_hex(8)}_{safe}"
                     with open(os.path.join(task_dir, stored), 'wb') as fp:
@@ -2577,12 +2602,14 @@ class Handler(BaseHTTPRequestHandler):
             pw = (data.get("password","") or "").strip()
             email = (data.get("email","") or "").strip()
             if not un or not dn: self._json(400, {"error":"Datos incompletos"}); return
+            if pw and len(pw) < 8:
+                self._json(400, {"error":"La contraseña debe tener al menos 8 caracteres"}); return
             if not pw and not email:
                 self._json(400, {"error":"Se requiere contraseña o email para enviar activación"}); return
             if q1("SELECT id FROM users WHERE username=?", (un,)):
                 self._json(400, {"error":"Usuario ya existe"}); return
             token = secrets.token_urlsafe(32) if not pw else None
-            expiry = (datetime.now() + timedelta(hours=48)).isoformat() if not pw else None
+            expiry = (datetime.now() + timedelta(hours=4)).isoformat() if not pw else None
             uid = run(
                 "INSERT INTO users (username,pw_hash,display_name,role,active,email,show_in_planning,"
                 "first_name,last_name,phone,extension,reset_token,reset_token_expiry) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -2781,6 +2808,8 @@ class Handler(BaseHTTPRequestHandler):
                  (data.get("extension","") or "").strip(),
                  uid))
             if data.get("password"):
+                if len(data["password"]) < 8:
+                    self._json(400, {"error":"La contraseña debe tener al menos 8 caracteres"}); return
                 run("UPDATE users SET pw_hash=? WHERE id=?", (_hash(data["password"]),uid))
             self._json(200, {"ok":True}); return
 
