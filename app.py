@@ -1173,7 +1173,22 @@ function showTab(name,btn){{
   document.querySelectorAll('.tab-btn').forEach(function(b){{b.classList.remove('active');}});
   document.getElementById('tab-'+name).classList.add('active');
   if(btn) btn.classList.add('active');
+  history.replaceState(null,'','#'+name);
 }}
+(function(){{
+  var hash=(location.hash||'').replace('#','');
+  var valid=['trabajo','recursos','cierre'];
+  if(hash && valid.indexOf(hash)>=0){{
+    var pane=document.getElementById('tab-'+hash);
+    var btn=document.querySelector('.tab-btn[onclick*="'+hash+'"]');
+    if(pane){{
+      document.querySelectorAll('.tab-pane').forEach(function(p){{p.classList.remove('active');}});
+      document.querySelectorAll('.tab-btn').forEach(function(b){{b.classList.remove('active');}});
+      pane.classList.add('active');
+      if(btn) btn.classList.add('active');
+    }}
+  }}
+}})();
 
 // ── project ──
 function editProject(p){{
@@ -2855,7 +2870,11 @@ class Handler(BaseHTTPRequestHandler):
             # delete NOT NULL FK rows (cascade-like)
             for tbl_col in [("project_members","user_id"),("tech_kit","user_id"),
                             ("activities","user_id"),("work_logs","user_id"),
-                            ("tech_availability","user_id"),("change_requests","requester_id"),
+                            ("tech_availability","user_id"),
+                            ("change_requests","requester_id"),("change_requests","admin_id"),
+                            ("project_logs","user_id"),("wo_comments","user_id"),
+                            ("project_audit","user_id"),
+                            ("schedule_slots","user_id"),("time_entries","user_id"),
                             ("notifications","user_id")]:
                 try:
                     run(f"DELETE FROM {tbl_col[0]} WHERE {tbl_col[1]}=?", (uid,))
