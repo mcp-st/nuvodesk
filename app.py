@@ -2886,8 +2886,15 @@ class Handler(BaseHTTPRequestHandler):
 
         m = re.match(r"^/api/projects/(\d+)$", rel)
         if m:
-            run("DELETE FROM projects WHERE id=?", (int(m.group(1)),))
-            self._json(200, {"ok":True}); return
+            pid = int(m.group(1))
+            try:
+                # schedule_slots has no ON DELETE CASCADE — clear manually
+                run("DELETE FROM schedule_slots WHERE project_id=?", (pid,))
+                run("DELETE FROM projects WHERE id=?", (pid,))
+                self._json(200, {"ok": True})
+            except Exception as ex:
+                self._json(500, {"error": str(ex)})
+            return
 
         m = re.match(r"^/api/tasks/(\d+)$", rel)
         if m:
