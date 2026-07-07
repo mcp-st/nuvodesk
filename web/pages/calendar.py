@@ -12,6 +12,107 @@ _DOW_FULL    = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domi
 _TYPE_ICON   = {"physical":"⚡","online":"🌐","meeting":"👥","travel":"✈️","other":"📌"}
 _TYPE_LABEL  = {"physical":"Presencial","online":"Online","meeting":"Reunión","travel":"Viaje","other":"Otro"}
 _AVAIL_ICON  = {"available":"","remote":"🏠","traveling":"✈️","off":"—"}
+_AVAIL_LABEL = {"available":"Disponible","remote":"Remoto","traveling":"Desplazado","off":"Libre"}
+_AVAIL_COLOR = {"available":"#16a34a","remote":"#3b82f6","traveling":"#d97706","off":"#94a3b8"}
+
+
+def _avail_picker_html(uid, d_str, status, is_admin, compact=True):
+    """Availability badge. Admin gets a clickable dropdown picker."""
+    icon  = _AVAIL_ICON.get(status, "") or "✓"
+    label = _AVAIL_LABEL.get(status, status)
+    color = _AVAIL_COLOR.get(status, "#16a34a")
+    if not is_admin:
+        return (f'<span title="{label}" style="font-size:.6rem">{icon}</span>'
+                if status not in ("available", "") else "")
+    uid_js  = json.dumps(uid)
+    date_js = json.dumps(d_str)
+    size    = ".6rem" if compact else ".72rem"
+    badge   = (f'background:{color};color:#fff;border:none;border-radius:4px;'
+               f'padding:1px 5px;font-size:{size};cursor:pointer;line-height:1.5;white-space:nowrap')
+    opts    = "".join(
+        f'<button onclick="setAvail({uid_js},{date_js},\'{s}\')" '
+        f'style="background:{_AVAIL_COLOR[s]};color:#fff;border:none;border-radius:5px;'
+        f'padding:4px 8px;font-size:.72rem;cursor:pointer;text-align:left;white-space:nowrap;display:block;width:100%">'
+        f'{_AVAIL_ICON.get(s,"") or "✓"} {_AVAIL_LABEL[s]}</button>'
+        for s in ("available", "remote", "traveling", "off"))
+    text = f' {label}' if not compact else ""
+    return (f'<div class="avp" style="position:relative;display:inline-block">'
+            f'<button class="avp-btn" onclick="toggleAvp(this)" style="{badge}" title="{label}">'
+            f'{icon}{text}</button>'
+            f'<div class="avp-menu" style="display:none;position:absolute;z-index:300;bottom:110%;left:0;'
+            f'background:var(--surface,#fff);border:1px solid var(--border);border-radius:8px;'
+            f'padding:5px;gap:3px;flex-direction:column;min-width:130px;'
+            f'box-shadow:0 4px 16px rgba(0,0,0,.18)">{opts}</div></div>')
+
+
+def _avail_cr_js():
+    """Shared JS for availability picker and change-request resolution."""
+    return """
+function toggleAvp(btn){
+  document.querySelectorAll('.avp-menu').forEach(function(m){m.style.display='none';});
+  var m=btn.nextElementSibling;
+  m.style.display=(m.style.display==='flex'?'none':'flex');
+}
+function setAvail(uid,date,status){
+  fetch(bp+'/api/tech_availability',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({user_id:uid,avail_date:date,status:status})})
+  .then(function(r){if(r.ok)location.reload();});
+}
+document.addEventListener('click',function(e){
+  if(!e.target.closest('.avp'))
+    document.querySelectorAll('.avp-menu').forEach(function(m){m.style.display='none';});
+});
+function resolveCR(id,action){
+  if(!confirm(action==='approve'?'¿Aprobar esta solicitud?':'¿Rechazar esta solicitud?'))return;
+  fetch(bp+'/api/change_requests/'+id+'/resolve',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:action})})
+  .then(function(r){if(r.ok)location.reload();else r.json().then(function(j){alert(j.error||'Error');});});
+}"""
+
+
+def _pending_cr_panel(user):
+    """Card listing pending change requests for admin review."""
+    if user.get("role") != "admin":
+        return ""
+    crs = rs(q("""SELECT cr.*,u.display_name uname,p.name pname,
+        a.activity_date,a.hour_start,a.hour_end,a.all_day
+        FROM change_requests cr
+        JOIN activities a ON a.id=cr.activity_id
+        JOIN users u ON u.id=cr.requester_id
+        JOIN projects p ON p.id=a.project_id
+        WHERE cr.status='pending'
+        ORDER BY cr.created_at"""))
+    if not crs:
+        return ""
+    type_lbl = {"cancel":"Cancelar","reschedule":"Reagendar","modify":"Modificar"}
+    rows = ""
+    for cr in crs:
+        if cr["all_day"] or cr["hour_start"] is None:
+            time_str = "Todo el día"
+        else:
+            time_str = f'{cr["hour_start"]:02d}:00–{cr["hour_end"]:02d}:00'
+        rows += (
+            f'<div style="display:flex;align-items:flex-start;gap:12px;padding:10px 0;'
+            f'border-bottom:1px solid var(--border);flex-wrap:wrap">'
+            f'<div style="flex:1;min-width:180px">'
+            f'<div style="font-weight:700;font-size:.85rem">{_esc(cr["uname"])}'
+            f' · <a href="{BP}/calendar/{cr["activity_date"]}" style="color:var(--primary)">'
+            f'{cr["activity_date"]}</a></div>'
+            f'<div style="font-size:.75rem;color:var(--muted)">'
+            f'{type_lbl.get(cr["type"],cr["type"])} · {_esc(cr["pname"])} · {time_str}</div>'
+            f'<div style="font-size:.8rem;margin-top:4px;font-style:italic">{_esc(cr["message"])}</div>'
+            f'</div>'
+            f'<div style="display:flex;gap:6px;flex-shrink:0;align-self:center">'
+            f'<button class="btn btn-primary btn-sm" style="font-size:.75rem" '
+            f'onclick="resolveCR({cr["id"]},\'approve\')">✓ Aprobar</button>'
+            f'<button class="btn btn-danger btn-sm" style="font-size:.75rem" '
+            f'onclick="resolveCR({cr["id"]},\'reject\')">✕ Rechazar</button>'
+            f'</div></div>')
+    return (f'<div class="card" style="border-left:4px solid #d97706;padding:14px 16px;margin-bottom:16px">'
+            f'<div style="font-weight:700;margin-bottom:6px">⚠️ Solicitudes de cambio pendientes ({len(crs)})</div>'
+            f'{rows}</div>')
 
 
 def _load_techs():
@@ -195,11 +296,19 @@ def _calendar_page(user, year, month):
                           f'{icon}{warn} {_esc(a["pname"][:10])}</span>')
             if len(day_acts) > 2:
                 chips += f'<span style="font-size:.6rem;color:var(--muted)">+{len(day_acts)-2}</span>'
-            status_badge = f' {_AVAIL_ICON.get(status,"")}' if status not in ("available", "") else ""
+            hrs_day = sum(
+                (a["hour_end"] - a["hour_start"])
+                for a in day_acts
+                if not a["all_day"] and a["hour_start"] is not None and a["hour_end"] is not None)
+            hrs_txt = (f'<span style="font-size:.55rem;color:var(--muted);display:block;'
+                       f'text-align:right">{hrs_day}h</span>') if hrs_day else ""
+            avp = _avail_picker_html(t["id"], d_str, status, is_admin, compact=True)
             row_cells += (f'<td{td_cls}>'
                           f'<a href="{BP}/calendar/{d_str}" '
-                          f'style="display:block;min-height:32px;padding:2px;{bg};text-decoration:none;color:inherit">'
-                          f'{chips}{status_badge}</a></td>')
+                          f'style="display:block;min-height:28px;padding:2px;{bg};text-decoration:none;color:inherit">'
+                          f'{chips}{hrs_txt}</a>'
+                          f'<div style="text-align:right;padding:0 2px 2px">{avp}</div>'
+                          f'</td>')
         matrix_rows += f"<tr>{row_cells}</tr>"
 
     today_monday = str(today - timedelta(days=today.weekday()))
@@ -209,7 +318,9 @@ def _calendar_page(user, year, month):
     act_js    = _activity_js() if is_admin else ""
 
     no_rows = '<tr><td colspan="32" style="text-align:center;padding:24px;color:var(--muted)">Sin actividades este mes</td></tr>'
+    cr_panel = _pending_cr_panel(user)
     content = f"""
+{cr_panel}
 <div class="toolbar">
   <h1>🗓 Calendario</h1>
   <div style="display:flex;gap:8px;align-items:center">
@@ -246,6 +357,7 @@ def _calendar_page(user, year, month):
 <script>
 var bp={json.dumps(BP)};
 {act_js}
+{_avail_cr_js()}
 </script>"""
     return _shell("calendar", user, content)
 
@@ -323,8 +435,16 @@ def _calendar_week(user, week_start_str):
                       f'text-overflow:ellipsis" title="{_esc(a["pname"])} · {hs:02d}:00–{he:02d}:00">'
                       f'{icon} {_esc(a["pname"][:14])}</div>')
         if hrs_plan:
-            inner += f'<div style="font-size:.6rem;color:var(--muted);text-align:right">{hrs_plan}h plan.</div>'
-        return f'<td style="vertical-align:top;padding:4px;{bg}">{inner}</td>'
+            pct = min(100, int(hrs_plan / 8 * 100))
+            bar_col = "#ef4444" if pct >= 100 else "#f59e0b" if pct >= 75 else "#22c55e"
+            inner += (f'<div style="font-size:.6rem;color:var(--muted);text-align:right;margin-top:2px">'
+                      f'{hrs_plan}h / 8h</div>'
+                      f'<div style="height:4px;background:var(--border);border-radius:2px;margin-top:2px">'
+                      f'<div style="height:100%;width:{pct}%;background:{bar_col};border-radius:2px"></div>'
+                      f'</div>')
+        avp = _avail_picker_html(uid, d_str, status, is_admin, compact=True)
+        inner += f'<div style="text-align:right;margin-top:3px">{avp}</div>'
+        return f'<td style="vertical-align:top;padding:4px;min-width:90px;{bg}">{inner}</td>'
 
     def _log_cell(uid, d_str):
         logs_cell = log_map.get((uid, d_str), [])
@@ -401,8 +521,10 @@ def _calendar_week(user, week_start_str):
                    f'+ Actividad</button>') if is_admin else ""
     act_modal = _activity_modal(str(today)) if is_admin else ""
     act_js    = _activity_js() if is_admin else ""
+    cr_panel  = _pending_cr_panel(user)
 
     content = f"""
+{cr_panel}
 <div class="toolbar">
   <h1>🗓 Semana</h1>
   <div style="display:flex;gap:8px">
@@ -485,6 +607,7 @@ function delWorkLog(id){{
   if(!confirm('¿Eliminar este registro de horas?')) return;
   fetch(bp+'/api/work_logs/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
 }}
+{_avail_cr_js()}
 </script>"""
     return _shell("calendar", user, content)
 
@@ -560,7 +683,6 @@ def _calendar_day(user, day_str):
     th_techs = ""
     for t in visible_techs:
         status = avail.get((t["id"], day_str), "available")
-        badge  = f' {_AVAIL_ICON.get(status,"")}' if status not in ("available", "") else ""
         bg_sty = ""
         if status == "off":
             bg_sty = "background:var(--border)"
@@ -568,10 +690,12 @@ def _calendar_day(user, day_str):
             bg_sty = "background:color-mix(in srgb,orange 20%,transparent)"
         initials = "".join(w[0].upper() for w in t["display_name"].split()[:2])
         col = _pcolor(t["id"])
-        th_techs += (f'<th style="{bg_sty}">'
+        avp = _avail_picker_html(t["id"], day_str, status, is_admin, compact=False)
+        th_techs += (f'<th style="{bg_sty};min-width:90px">'
                      f'<div class="avatar avatar-sm" style="background:{col};margin:0 auto 3px">'
                      f'{_esc(initials)}</div>'
-                     f'<div style="font-size:.65rem">{_esc(t["display_name"].split()[0])}{badge}</div>'
+                     f'<div style="font-size:.65rem;margin-bottom:4px">{_esc(t["display_name"].split()[0])}</div>'
+                     f'{avp}'
                      f'</th>')
 
     allday_cells = ""
@@ -704,7 +828,33 @@ def _calendar_day(user, day_str):
   </div>
 </div></div>"""
 
+    cr_panel  = _pending_cr_panel(user)
+    log_modal_day = f"""
+<div class="modal-bg" id="log-modal-day">
+<div class="modal" style="max-width:460px">
+  <h2>Registrar horas</h2>
+  <div class="form-row">
+    <div><label>Técnico</label><select id="ld-user">{user_opts_day}</select></div>
+    <div><label>Proyecto</label><select id="ld-proj">{proj_opts_day}</select></div>
+  </div>
+  <div class="form-row">
+    <div><label>Fecha</label><input type="date" id="ld-date" value="{day_str}"></div>
+    <div><label>Horas</label><input type="number" id="ld-hours" min="0.25" max="24" step="0.25" value="1"></div>
+  </div>
+  <div class="form-row single"><div><label>Descripción</label>
+    <input id="ld-desc" placeholder="Qué se hizo..."></div></div>
+  <div class="modal-foot">
+    <button type="button" class="btn btn-ghost"
+      onclick="document.getElementById('log-modal-day').classList.remove('open')">Cancelar</button>
+    <button class="btn btn-primary" onclick="doDayLog()">Guardar</button>
+  </div>
+</div></div>"""
+    add_log_btn_day = (f'<button class="btn btn-ghost btn-sm" '
+                       f'onclick="document.getElementById(\'log-modal-day\').classList.add(\'open\')">'
+                       f'🕐 Registrar horas</button>')
+
     content = f"""
+{cr_panel}
 <div class="day-nav">
   <a href="{BP}/calendar/{prev_day}" class="btn btn-ghost btn-sm">← {prev_day}</a>
   <div style="flex:1;text-align:center">
@@ -717,9 +867,9 @@ def _calendar_day(user, day_str):
 <div style="display:grid;grid-template-columns:1fr 280px;gap:18px;align-items:start">
 
 <div class="card" style="padding:0;overflow:hidden">
-  <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+  <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
     <h2 style="margin:0">Horario</h2>
-    {add_btn_day}
+    <div style="display:flex;gap:8px">{add_btn_day} {add_log_btn_day}</div>
   </div>
   <div style="overflow-x:auto">
   <table class="day-matrix">
@@ -741,6 +891,7 @@ def _calendar_day(user, day_str):
 
 {slot_modal_html}
 {cr_modal_html}
+{log_modal_day}
 
 <script>
 var bp={json.dumps(BP)};
@@ -806,5 +957,19 @@ function doSendCR(){{
     if(parseInt(sel2.options[i].value)===h+1){{sel2.selectedIndex=i;break;}}
   }}
 }})();
+document.getElementById('log-modal-day').onclick=function(e){{if(e.target===this)this.classList.remove('open');}};
+function doDayLog(){{
+  var d={{
+    user_id:document.getElementById('ld-user').value,
+    project_id:document.getElementById('ld-proj').value,
+    log_date:document.getElementById('ld-date').value,
+    hours:parseFloat(document.getElementById('ld-hours').value),
+    description:document.getElementById('ld-desc').value
+  }};
+  fetch(bp+'/api/work_logs',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
+    .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}});}})
+    .then(function(res){{if(!res.ok){{alert(res.j.error||'Error');return;}}location.reload();}});
+}}
+{_avail_cr_js()}
 </script>"""
     return _shell("calendar", user, content)
