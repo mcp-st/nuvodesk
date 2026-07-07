@@ -317,6 +317,24 @@ MIGRATIONS = [
         created_at     TEXT DEFAULT (datetime('now')),
         resolved_at    TEXT
     )""",
+    """CREATE TABLE IF NOT EXISTS warehouse_locations (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        code        TEXT NOT NULL UNIQUE,
+        name        TEXT NOT NULL,
+        warehouse   TEXT NOT NULL DEFAULT 'Almacén Principal',
+        description TEXT DEFAULT '',
+        active      INTEGER NOT NULL DEFAULT 1,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS stock_by_location (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+        location_id INTEGER NOT NULL REFERENCES warehouse_locations(id),
+        qty         INTEGER NOT NULL DEFAULT 0,
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(material_id, location_id)
+    )""",
+    "ALTER TABLE stock_movements ADD COLUMN location_id INTEGER DEFAULT NULL REFERENCES warehouse_locations(id)",
 ]
 
 def init_db():
@@ -329,6 +347,24 @@ def init_db():
                 db().commit()
             except sqlite3.OperationalError:
                 pass
+        # Seed default location and migrate existing stock_warehouse values
+        if db().execute("SELECT COUNT(*) FROM warehouse_locations").fetchone()[0] == 0:
+            db().execute(
+                "INSERT INTO warehouse_locations (code,name,warehouse,description) VALUES (?,?,?,?)",
+                ("SIN-UBICAR", "Sin ubicar", "Almacén Principal",
+                 "Ubicación por defecto — stock pendiente de clasificar"))
+            db().commit()
+        default_loc = db().execute(
+            "SELECT id FROM warehouse_locations ORDER BY id LIMIT 1").fetchone()
+        if default_loc:
+            lid = default_loc[0]
+            for mid, wh in db().execute(
+                    "SELECT id,stock_warehouse FROM materials WHERE stock_warehouse>0").fetchall():
+                db().execute(
+                    "INSERT OR IGNORE INTO stock_by_location (material_id,location_id,qty) VALUES (?,?,?)",
+                    (mid, lid, wh))
+            db().commit()
+
         if db().execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             db().execute(
                 "INSERT INTO users (username,pw_hash,display_name,role) VALUES (?,?,?,?)",
@@ -1927,6 +1963,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, fdata, "image/jpeg", {"Content-Disposition":"inline"}); return
         if rel == "/api/materials":
             self._json(200, rs(q("SELECT * FROM materials ORDER BY name"))); return
+        if rel == "/api/locations":
+            locs = rs(q("""SELECT wl.*,
+                COALESCE(SUM(sbl.qty),0) total_stock,
+                COUNT(DISTINCT sbl.material_id) n_materials
+                FROM warehouse_locations wl
+                LEFT JOIN stock_by_location sbl ON sbl.location_id=wl.id AND sbl.qty>0
+                GROUP BY wl.id ORDER BY wl.warehouse,wl.code"""))
+            self._json(200, locs); return
+        m = re.match(r"^/api/materials/(\d+)/stock_by_location$", rel)
+        if m:
+            mid = int(m.group(1))
+            rows = rs(q("""SELECT sbl.*,wl.code loc_code,wl.name loc_name,wl.warehouse
+                FROM stock_by_location sbl JOIN warehouse_locations wl ON wl.id=sbl.location_id
+                WHERE sbl.material_id=? AND sbl.qty>0
+                ORDER BY wl.warehouse,wl.code""", (mid,)))
+            self._json(200, rows); return
         m = re.match(r"^/api/materials/(\d+)/assignments$", rel)
         if m:
             mid = int(m.group(1))
@@ -2529,7 +2581,20 @@ class Handler(BaseHTTPRequestHandler):
                  int(data.get("stock_min") or 0),data.get("category","")))
             self._json(201, {"id":mid}); return
 
-        # stock adjust (warehouse)
+        # create location
+        if rel == "/api/locations":
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            code = (data.get("code") or "").strip().upper()
+            name = (data.get("name") or "").strip()
+            warehouse = (data.get("warehouse") or "Almacén Principal").strip()
+            if not code or not name: self._json(400, {"error":"Código y nombre requeridos"}); return
+            if q1("SELECT id FROM warehouse_locations WHERE code=?", (code,)):
+                self._json(400, {"error":f"Código '{code}' ya existe"}); return
+            lid = run("INSERT INTO warehouse_locations (code,name,warehouse,description) VALUES (?,?,?,?)",
+                      (code, name, warehouse, data.get("description","")))
+            self._json(201, {"id": lid}); return
+
+        # stock adjust with optional location
         m = re.match(r"^/api/materials/(\d+)/adjust$", rel)
         if m:
             mid = int(m.group(1))
@@ -2537,37 +2602,86 @@ class Handler(BaseHTTPRequestHandler):
             if qty == 0: self._json(400, {"error":"Cantidad 0"}); return
             mat = r2d(q1("SELECT * FROM materials WHERE id=?", (mid,)))
             if not mat: self._json(404, {"error":"Not found"}); return
+            lid_raw = data.get("location_id")
+            lid = int(lid_raw) if lid_raw else None
+            notes = data.get("notes", "")
+            if lid:
+                loc = r2d(q1("SELECT id FROM warehouse_locations WHERE id=?", (lid,)))
+                if not loc: self._json(404, {"error":"Ubicación no encontrada"}); return
+                cur = r2d(q1("SELECT qty FROM stock_by_location WHERE material_id=? AND location_id=?", (mid, lid)))
+                cur_qty = cur["qty"] if cur else 0
+                new_loc_qty = cur_qty + qty
+                if new_loc_qty < 0:
+                    self._json(400, {"error":f"Stock insuficiente en esa ubicación ({cur_qty} disponibles)"}); return
+                if cur:
+                    run("UPDATE stock_by_location SET qty=?,updated_at=datetime('now') WHERE material_id=? AND location_id=?",
+                        (new_loc_qty, mid, lid))
+                else:
+                    run("INSERT INTO stock_by_location (material_id,location_id,qty) VALUES (?,?,?)", (mid, lid, new_loc_qty))
             new_wh = mat["stock_warehouse"] + qty
-            if new_wh < 0: self._json(400, {"error":"Stock insuficiente"}); return
+            if new_wh < 0: self._json(400, {"error":"Stock total insuficiente"}); return
             run("UPDATE materials SET stock_warehouse=?,updated_at=datetime('now') WHERE id=?", (new_wh, mid))
             direction = "in" if qty > 0 else "out"
-            _stock_move(mid, abs(qty), direction, "adjust", 0, sess["id"], data.get("notes",""))
+            _stock_move(mid, abs(qty), direction, "adjust", 0, sess["id"], notes, lid)
             self._json(200, {"ok":True,"new_stock":new_wh}); return
 
-        # stock transfer: warehouse ↔ field
+        # transfer: location-to-location or location↔field
         m = re.match(r"^/api/materials/(\d+)/transfer$", rel)
         if m:
             mid = int(m.group(1))
             qty = int(data.get("qty") or 0)
-            direction = (data.get("direction") or "").strip()
+            from_loc = data.get("from_loc", "")   # location_id (int as str) or "field"
+            to_loc   = data.get("to_loc", "")     # location_id (int as str) or "field"
+            notes    = data.get("notes", "")
             if qty <= 0: self._json(400, {"error":"Cantidad debe ser > 0"}); return
-            if direction not in ("to_field", "to_warehouse"):
-                self._json(400, {"error":"direction debe ser to_field o to_warehouse"}); return
+            if from_loc == to_loc: self._json(400, {"error":"Origen y destino iguales"}); return
             mat = r2d(q1("SELECT * FROM materials WHERE id=?", (mid,)))
             if not mat: self._json(404, {"error":"Not found"}); return
-            notes = data.get("notes", "")
-            if direction == "to_field":
-                if mat["stock_warehouse"] < qty:
-                    self._json(400, {"error":f"Stock en almacén insuficiente ({mat['stock_warehouse']} disponibles)"}); return
-                run("UPDATE materials SET stock_warehouse=stock_warehouse-?,stock_field=stock_field+?,updated_at=datetime('now') WHERE id=?",
-                    (qty, qty, mid))
-                _stock_move(mid, qty, "out", "transfer_to_field", 0, sess["id"], notes or "Almacén → Campo")
-            else:
+
+            def _loc_qty(loc_id):
+                r = r2d(q1("SELECT qty FROM stock_by_location WHERE material_id=? AND location_id=?", (mid, int(loc_id))))
+                return r["qty"] if r else 0
+
+            def _set_loc(loc_id, new_qty):
+                cur = r2d(q1("SELECT id FROM stock_by_location WHERE material_id=? AND location_id=?", (mid, int(loc_id))))
+                if cur:
+                    run("UPDATE stock_by_location SET qty=?,updated_at=datetime('now') WHERE material_id=? AND location_id=?",
+                        (new_qty, mid, int(loc_id)))
+                else:
+                    run("INSERT INTO stock_by_location (material_id,location_id,qty) VALUES (?,?,?)", (mid, int(loc_id), new_qty))
+
+            if from_loc == "field":
                 if mat["stock_field"] < qty:
                     self._json(400, {"error":f"Stock en campo insuficiente ({mat['stock_field']} disponibles)"}); return
                 run("UPDATE materials SET stock_field=stock_field-?,stock_warehouse=stock_warehouse+?,updated_at=datetime('now') WHERE id=?",
                     (qty, qty, mid))
-                _stock_move(mid, qty, "in", "transfer_to_warehouse", 0, sess["id"], notes or "Campo → Almacén")
+                if to_loc != "field":
+                    _set_loc(to_loc, _loc_qty(to_loc) + qty)
+                _stock_move(mid, qty, "in", "transfer_to_warehouse", 0, sess["id"],
+                            notes or "Campo → Almacén", int(to_loc) if to_loc != "field" else None)
+            elif to_loc == "field":
+                fq = _loc_qty(from_loc) if from_loc else mat["stock_warehouse"]
+                if from_loc and fq < qty:
+                    self._json(400, {"error":f"Stock insuficiente en ubicación ({fq} disponibles)"}); return
+                if mat["stock_warehouse"] < qty:
+                    self._json(400, {"error":f"Stock en almacén insuficiente ({mat['stock_warehouse']} disponibles)"}); return
+                if from_loc:
+                    _set_loc(from_loc, fq - qty)
+                run("UPDATE materials SET stock_warehouse=stock_warehouse-?,stock_field=stock_field+?,updated_at=datetime('now') WHERE id=?",
+                    (qty, qty, mid))
+                _stock_move(mid, qty, "out", "transfer_to_field", 0, sess["id"],
+                            notes or "Almacén → Campo", int(from_loc) if from_loc else None)
+            else:
+                # location to location (internal transfer)
+                fq = _loc_qty(from_loc)
+                if fq < qty:
+                    self._json(400, {"error":f"Stock insuficiente en ubicación de origen ({fq} disponibles)"}); return
+                _set_loc(from_loc, fq - qty)
+                _set_loc(to_loc, _loc_qty(to_loc) + qty)
+                _stock_move(mid, qty, "out", "transfer_internal", int(from_loc), sess["id"],
+                            notes or f"Loc {from_loc} → Loc {to_loc}", int(from_loc))
+                _stock_move(mid, qty, "in", "transfer_internal", int(to_loc), sess["id"],
+                            notes or f"Loc {from_loc} → Loc {to_loc}", int(to_loc))
             self._json(200, {"ok":True}); return
 
         # assignments
@@ -2687,6 +2801,22 @@ class Handler(BaseHTTPRequestHandler):
         data = _body(self)
         sess = _get_sess(self)
         if not sess: self._json(401, {"error":"Unauthorized"}); return
+
+        m = re.match(r"^/api/locations/(\d+)$", rel)
+        if m:
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            lid = int(m.group(1))
+            if not q1("SELECT id FROM warehouse_locations WHERE id=?", (lid,)):
+                self._json(404, {"error":"Not found"}); return
+            code = (data.get("code") or "").strip().upper()
+            name = (data.get("name") or "").strip()
+            if not code or not name: self._json(400, {"error":"Código y nombre requeridos"}); return
+            clash = r2d(q1("SELECT id FROM warehouse_locations WHERE code=? AND id!=?", (code, lid)))
+            if clash: self._json(400, {"error":f"Código '{code}' ya existe"}); return
+            run("UPDATE warehouse_locations SET code=?,name=?,warehouse=?,description=?,active=? WHERE id=?",
+                (code, name, (data.get("warehouse") or "Almacén Principal").strip(),
+                 data.get("description",""), 1 if data.get("active", True) else 0, lid))
+            self._json(200, {"ok":True}); return
 
         m = re.match(r"^/api/projects/(\d+)$", rel)
         if m:
@@ -2904,6 +3034,16 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/checklist/(\d+)$", rel)
         if m:
             run("DELETE FROM task_checklist WHERE id=?", (int(m.group(1)),))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/locations/(\d+)$", rel)
+        if m:
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            lid = int(m.group(1))
+            total_stock = r2d(q1("SELECT COALESCE(SUM(qty),0) s FROM stock_by_location WHERE location_id=?", (lid,)))
+            if total_stock and total_stock["s"] > 0:
+                self._json(400, {"error":"No se puede eliminar una ubicación con stock"}); return
+            run("DELETE FROM warehouse_locations WHERE id=?", (lid,))
             self._json(200, {"ok":True}); return
 
         m = re.match(r"^/api/materials/(\d+)$", rel)

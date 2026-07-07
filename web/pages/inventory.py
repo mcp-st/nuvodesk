@@ -6,16 +6,23 @@ from web.layout import _shell
 
 
 def _inventory_page(user):
+    is_admin = user.get("role") == "admin"
     mats  = rs(q("SELECT * FROM materials ORDER BY category, name"))
     cats  = sorted({m["category"] for m in mats if m.get("category")})
     moves = rs(q("""SELECT mv.*,m.name mat_name,m.code mat_code,u.display_name uname
         FROM stock_movements mv JOIN materials m ON m.id=mv.material_id
         LEFT JOIN users u ON u.id=mv.user_id
         ORDER BY mv.created_at DESC LIMIT 30"""))
+    locs  = rs(q("""SELECT wl.*,
+        COALESCE(SUM(sbl.qty),0) total_stock,
+        COUNT(DISTINCT sbl.material_id) n_materials
+        FROM warehouse_locations wl
+        LEFT JOIN stock_by_location sbl ON sbl.location_id=wl.id AND sbl.qty>0
+        GROUP BY wl.id ORDER BY wl.warehouse,wl.code"""))
 
     critical = [m for m in mats if m["stock_min"] > 0 and m["stock_warehouse"] <= m["stock_min"]]
 
-    # ── low-stock panel ─────────────────────────────────────────────────────────
+    # ── low-stock panel ──────────────────────────────────────────────────────────
     alert_panel = ""
     if critical:
         crit_rows = "".join(
@@ -23,7 +30,7 @@ def _inventory_page(user):
             f'border-bottom:1px solid var(--border)">'
             f'<span class="chip">{_esc(m["code"])}</span>'
             f'<span style="flex:1;font-size:.85rem">{_esc(m["name"])}</span>'
-            f'<span style="font-size:.82rem;color:var(--red,#dc2626);font-weight:700;white-space:nowrap">'
+            f'<span style="font-size:.82rem;color:#dc2626;font-weight:700;white-space:nowrap">'
             f'{m["stock_warehouse"]} / mín {m["stock_min"]} {_esc(m["unit"])}</span>'
             f'<button class="btn btn-ghost btn-icon" title="Ajustar stock" '
             f'onclick="openAdjust({m["id"]},{json.dumps(m["name"])},{m["stock_warehouse"]})">±</button>'
@@ -37,14 +44,17 @@ def _inventory_page(user):
 
     # ── category options ─────────────────────────────────────────────────────────
     cat_opts = "".join(f'<option value="{_esc(c)}">{_esc(c)}</option>' for c in cats)
-    cat_filter_btns = '<button class="cat-btn active" data-cat="">Todas</button>' + "".join(
-        f'<button class="cat-btn" data-cat="{_esc(c)}">{_esc(c)}</button>' for c in cats)
+
+    # ── location options for selectors ───────────────────────────────────────────
+    loc_opts_all = "".join(
+        f'<option value="{l["id"]}">[{_esc(l["code"])}] {_esc(l["name"])} — {_esc(l["warehouse"])}</option>'
+        for l in locs if l.get("active", 1))
 
     # ── materials table ──────────────────────────────────────────────────────────
     rows = ""
     for m in mats:
         is_crit  = m["stock_min"] > 0 and m["stock_warehouse"] <= m["stock_min"]
-        low_sty  = "color:var(--red,#dc2626);font-weight:700" if is_crit else ""
+        low_sty  = "color:#dc2626;font-weight:700" if is_crit else ""
         crit_ico = " ⚠️" if is_crit else ""
         rows += (
             f'<tr data-name="{_esc((m["name"]+m["code"]).lower())}" '
@@ -61,11 +71,13 @@ def _inventory_page(user):
             f'<td style="text-align:center" class="col-m-hide">{m["stock_min"] or "—"}</td>'
             f'<td class="muted col-m-hide">{_esc(m["unit"])}</td>'
             f'<td style="white-space:nowrap">'
-            f'<button class="btn btn-ghost btn-icon" title="Ajustar almacén" '
+            f'<button class="btn btn-ghost btn-icon" title="Stock por ubicación" '
+            f'onclick="openLocStock({m["id"]},{json.dumps(m["name"])})">📍</button>'
+            f'<button class="btn btn-ghost btn-icon" title="Ajustar stock" '
             f'onclick="openAdjust({m["id"]},{json.dumps(m["name"])},{m["stock_warehouse"]})">±</button>'
-            f'<button class="btn btn-ghost btn-icon" title="Transferir almacén↔campo" '
+            f'<button class="btn btn-ghost btn-icon" title="Transferir" '
             f'onclick="openTransfer({m["id"]},{json.dumps(m["name"])},{m["stock_warehouse"]},{m["stock_field"]})">⇄</button>'
-            f'<button class="btn btn-ghost btn-icon" title="Ver uso en proyectos" '
+            f'<button class="btn btn-ghost btn-icon" title="Uso en proyectos" '
             f'onclick="openUsage({m["id"]},{json.dumps(m["name"])})">📋</button>'
             f'<button class="btn btn-ghost btn-icon" onclick="editMat({json.dumps(dict(m))})">✏️</button>'
             f'<button class="btn btn-danger btn-icon" onclick="delMat({m["id"]})">✕</button>'
@@ -75,6 +87,7 @@ def _inventory_page(user):
     _SRC_LABEL = {
         "adjust": "Ajuste", "kit": "Kit técnico", "kit_return": "Dev. kit",
         "transfer_to_field": "→ Campo", "transfer_to_warehouse": "← Almacén",
+        "transfer_internal": "⇄ Interno",
     }
     mv_rows = ""
     for mv in moves:
@@ -90,18 +103,70 @@ def _inventory_page(user):
             f'<td class="muted col-m-hide" style="font-size:.78rem">{_esc(mv["notes"] or "")}</td>'
             f'</tr>')
 
+    # ── locations table ──────────────────────────────────────────────────────────
+    loc_rows = ""
+    warehouses = {}
+    for l in locs:
+        wh = l.get("warehouse") or "Sin grupo"
+        warehouses.setdefault(wh, []).append(l)
+
+    for wh_name, wh_locs in warehouses.items():
+        loc_rows += (
+            f'<tr><td colspan="6" style="background:var(--surface2,#f1f5f9);'
+            f'font-weight:700;font-size:.8rem;color:var(--muted);padding:6px 12px;'
+            f'letter-spacing:.04em;text-transform:uppercase">'
+            f'🏭 {_esc(wh_name)}</td></tr>')
+        for l in wh_locs:
+            active_badge = ('<span style="color:#16a34a;font-size:.75rem">● Activa</span>'
+                           if l.get("active", 1) else
+                           '<span style="color:#94a3b8;font-size:.75rem">○ Inactiva</span>')
+            edit_btn = (f'<button class="btn btn-ghost btn-icon" '
+                        f'onclick="editLoc({json.dumps(dict(l))})" title="Editar">✏️</button>'
+                        f'<button class="btn btn-danger btn-icon" '
+                        f'onclick="delLoc({l["id"]},{json.dumps(l["name"])})" title="Eliminar">✕</button>'
+                        if is_admin else "")
+            loc_rows += (
+                f'<tr>'
+                f'<td><span class="chip">{_esc(l["code"])}</span></td>'
+                f'<td><span class="fw7">{_esc(l["name"])}</span>'
+                f'{"<br><span class=muted style=font-size:.72rem>"+_esc(l["description"])+"</span>" if l.get("description") else ""}'
+                f'</td>'
+                f'<td class="muted col-m-hide">{_esc(wh_name)}</td>'
+                f'<td style="text-align:center">{int(l["total_stock"])}</td>'
+                f'<td style="text-align:center">{int(l["n_materials"])}</td>'
+                f'<td>{active_badge} {edit_btn}</td>'
+                f'</tr>')
+
     empty_mats = ('<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">'
                   'Sin materiales</td></tr>')
     empty_mvs  = ('<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">'
                   'Sin movimientos</td></tr>')
+    empty_locs = ('<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">'
+                  'Sin ubicaciones definidas</td></tr>')
+
+    new_loc_btn = (f'<button class="btn btn-primary" onclick="openNewLoc()">+ Ubicación</button>'
+                   if is_admin else "")
+
+    locs_json = json.dumps([dict(l) for l in locs])
 
     content = f"""
 {alert_panel}
-<div class="toolbar"><h1>📦 Inventario</h1>
-  <button class="btn btn-primary" onclick="openNewMat()">+ Material</button>
+<div class="toolbar">
+  <h1>📦 Inventario</h1>
+  <div style="display:flex;gap:8px">
+    <button class="btn btn-ghost" id="tab-mats-btn" onclick="showTab('mats')" style="font-weight:700">Materiales</button>
+    <button class="btn btn-ghost" id="tab-locs-btn" onclick="showTab('locs')">Ubicaciones</button>
+  </div>
+  <div id="tab-mats-actions">
+    <button class="btn btn-primary" onclick="openNewMat()">+ Material</button>
+  </div>
+  <div id="tab-locs-actions" style="display:none">
+    {new_loc_btn}
+  </div>
 </div>
 
-<!-- filter bar -->
+<!-- ── MATERIALES TAB ── -->
+<div id="tab-mats">
 <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
   <input id="inv-search" type="search" placeholder="Buscar nombre o código…"
     style="padding:7px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:.85rem;
@@ -139,6 +204,21 @@ def _inventory_page(user):
     <th class="col-m-hide">Tipo</th><th class="col-m-hide">Usuario</th><th class="col-m-hide">Notas</th>
   </tr></thead><tbody>{mv_rows or empty_mvs}</tbody></table></div>
 </div>
+</div><!-- /tab-mats -->
+
+<!-- ── UBICACIONES TAB ── -->
+<div id="tab-locs" style="display:none">
+<div class="card" style="padding:0">
+<div class="tbl-wrap"><table><thead><tr>
+  <th>Código</th><th>Nombre</th><th class="col-m-hide">Almacén</th>
+  <th style="text-align:center">Stock</th>
+  <th style="text-align:center">Materiales</th>
+  <th>Estado</th>
+</tr></thead>
+<tbody>{loc_rows or empty_locs}</tbody>
+</table></div>
+</div>
+</div><!-- /tab-locs -->
 
 <!-- ── modal: nuevo/editar material ── -->
 <div class="modal-bg" id="mat-modal">
@@ -174,13 +254,19 @@ def _inventory_page(user):
   </form>
 </div></div>
 
-<!-- ── modal: ajuste rápido almacén ── -->
+<!-- ── modal: ajuste de stock ── -->
 <div class="modal-bg" id="adj-modal">
-<div class="modal" style="max-width:360px">
+<div class="modal" style="max-width:400px">
   <h2 id="adj-title">Ajuste de stock — Almacén</h2>
   <input type="hidden" id="adj-mid">
   <div class="field"><label>Variación (+entrada / −salida)</label>
     <input type="number" id="adj-qty" placeholder="Ej: +10 o -5"></div>
+  <div class="field"><label>Ubicación <span class="muted" style="font-size:.78rem">(opcional)</span></label>
+    <select id="adj-loc">
+      <option value="">— Sin ubicación específica —</option>
+      {loc_opts_all}
+    </select>
+  </div>
   <div class="field"><label>Notas</label>
     <input id="adj-notes" placeholder="Motivo del ajuste"></div>
   <div class="modal-foot">
@@ -189,27 +275,46 @@ def _inventory_page(user):
   </div>
 </div></div>
 
-<!-- ── modal: transferencia almacén ↔ campo ── -->
+<!-- ── modal: transferencia ── -->
 <div class="modal-bg" id="tr-modal">
-<div class="modal" style="max-width:380px">
+<div class="modal" style="max-width:420px">
   <h2>Transferir stock</h2>
   <div id="tr-info" class="muted" style="font-size:.82rem;margin-bottom:12px"></div>
   <input type="hidden" id="tr-mid">
+  <div class="form-row single">
+    <label>Origen</label>
+    <select id="tr-from">
+      <option value="field">Campo</option>
+      {loc_opts_all}
+    </select>
+  </div>
+  <div class="form-row single">
+    <label>Destino</label>
+    <select id="tr-to">
+      <option value="field">Campo</option>
+      {loc_opts_all}
+    </select>
+  </div>
   <div class="form-row">
-    <div><label>Dirección</label>
-      <select id="tr-dir">
-        <option value="to_field">Almacén → Campo</option>
-        <option value="to_warehouse">Campo → Almacén</option>
-      </select>
-    </div>
     <div><label>Cantidad</label>
       <input type="number" id="tr-qty" min="1" value="1"></div>
   </div>
+  <div id="tr-loc-stock" class="muted" style="font-size:.78rem;margin-bottom:8px"></div>
   <div class="field"><label>Notas</label>
     <input id="tr-notes" placeholder="Motivo (opcional)"></div>
   <div class="modal-foot">
     <button type="button" class="btn btn-ghost" onclick="closeTrModal()">Cancelar</button>
     <button class="btn btn-primary" onclick="doTransfer()">Transferir</button>
+  </div>
+</div></div>
+
+<!-- ── modal: stock por ubicación ── -->
+<div class="modal-bg" id="loc-stock-modal">
+<div class="modal" style="max-width:480px">
+  <h2>Stock por ubicación: <span id="ls-mat-name" style="font-weight:400"></span></h2>
+  <div id="ls-body" style="min-height:60px"><p class="muted">Cargando…</p></div>
+  <div class="modal-foot">
+    <button class="btn btn-ghost" onclick="document.getElementById('loc-stock-modal').classList.remove('open')">Cerrar</button>
   </div>
 </div></div>
 
@@ -219,13 +324,52 @@ def _inventory_page(user):
   <h2>Uso en proyectos: <span id="use-mat-name" style="font-weight:400"></span></h2>
   <div id="use-body" style="min-height:60px"><p class="muted">Cargando…</p></div>
   <div class="modal-foot">
-    <button class="btn btn-ghost"
-      onclick="document.getElementById('use-modal').classList.remove('open')">Cerrar</button>
+    <button class="btn btn-ghost" onclick="document.getElementById('use-modal').classList.remove('open')">Cerrar</button>
+  </div>
+</div></div>
+
+<!-- ── modal: nueva/editar ubicación ── -->
+<div class="modal-bg" id="loc-modal">
+<div class="modal" style="max-width:420px">
+  <h2 id="loc-modal-title">Nueva ubicación</h2>
+  <input type="hidden" id="loc-id">
+  <div class="form-row">
+    <div><label>Código</label><input id="l-code" required placeholder="A1-EST1" style="text-transform:uppercase"></div>
+    <div><label>Nombre</label><input id="l-name" required placeholder="Estantería 1"></div>
+  </div>
+  <div class="form-row single">
+    <label>Almacén <span class="muted" style="font-size:.78rem">(agrupa ubicaciones)</span></label>
+    <input id="l-warehouse" placeholder="Almacén Principal" value="Almacén Principal" list="wh-dl">
+    <datalist id="wh-dl">
+      {''.join(f'<option value="{_esc(wh)}"></option>' for wh in {l.get("warehouse","") for l in locs if l.get("warehouse")})}
+    </datalist>
+  </div>
+  <div class="form-row single"><label>Descripción</label>
+    <input id="l-desc" placeholder="Descripción opcional"></div>
+  <div class="form-row single">
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" id="l-active" checked> Ubicación activa
+    </label>
+  </div>
+  <div class="modal-foot">
+    <button type="button" class="btn btn-ghost" onclick="closeLocModal()">Cancelar</button>
+    <button class="btn btn-primary" onclick="saveLoc()">Guardar</button>
   </div>
 </div></div>
 
 <script>
 var bp={json.dumps(BP)};
+var _allLocs={locs_json};
+
+// ── tabs ─────────────────────────────────────────────────────────────────────
+function showTab(t){{
+  document.getElementById('tab-mats').style.display=t==='mats'?'':'none';
+  document.getElementById('tab-locs').style.display=t==='locs'?'':'none';
+  document.getElementById('tab-mats-actions').style.display=t==='mats'?'':'none';
+  document.getElementById('tab-locs-actions').style.display=t==='locs'?'':'none';
+  document.getElementById('tab-mats-btn').style.fontWeight=t==='mats'?'700':'400';
+  document.getElementById('tab-locs-btn').style.fontWeight=t==='locs'?'700':'400';
+}}
 
 // ── filter ────────────────────────────────────────────────────────────────────
 function filterMats(){{
@@ -291,11 +435,12 @@ function delMat(id){{
     .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
 }}
 
-// ── adjust modal (almacén) ────────────────────────────────────────────────────
+// ── adjust modal ──────────────────────────────────────────────────────────────
 function openAdjust(id,name,cur){{
   document.getElementById('adj-title').textContent='Ajuste almacén: '+name+' (actual: '+cur+')';
   document.getElementById('adj-mid').value=id;
   document.getElementById('adj-qty').value='';
+  document.getElementById('adj-loc').value='';
   document.getElementById('adj-notes').value='';
   document.getElementById('adj-modal').classList.add('open');
 }}
@@ -304,38 +449,93 @@ document.getElementById('adj-modal').onclick=function(e){{if(e.target===this)clo
 function doAdjust(){{
   var mid=document.getElementById('adj-mid').value;
   var qty=parseInt(document.getElementById('adj-qty').value);
+  var lid=document.getElementById('adj-loc').value;
   var notes=document.getElementById('adj-notes').value;
   if(isNaN(qty)||qty===0){{alert('Introduce una cantidad distinta de 0');return;}}
+  var d={{qty:qty,notes:notes}};
+  if(lid)d.location_id=parseInt(lid);
   fetch(bp+'/api/materials/'+mid+'/adjust',{{method:'POST',
-    headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{qty:qty,notes:notes}})}})
+    headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
     .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
 }}
 
-// ── transfer modal (almacén ↔ campo) ─────────────────────────────────────────
+// ── transfer modal ────────────────────────────────────────────────────────────
+var _trMid=null;
 function openTransfer(id,name,wh,fi){{
+  _trMid=id;
   document.getElementById('tr-mid').value=id;
   document.getElementById('tr-info').textContent=
-    name+' — Almacén: '+wh+' · Campo: '+fi;
+    name+' — Almacén: '+wh+' ud · Campo: '+fi+' ud';
+  document.getElementById('tr-from').value='field';
+  document.getElementById('tr-to').value='field';
   document.getElementById('tr-qty').value=1;
   document.getElementById('tr-notes').value='';
+  document.getElementById('tr-loc-stock').textContent='';
   document.getElementById('tr-modal').classList.add('open');
+  // load per-material location stock to show hints
+  fetch(bp+'/api/materials/'+id+'/stock_by_location')
+    .then(function(r){{return r.json();}})
+    .then(function(rows){{
+      // update from selector options with stock hints
+      var sel=document.getElementById('tr-from');
+      Array.from(sel.options).forEach(function(o){{
+        if(o.value==='field'){{o.textContent='Campo ('+fi+' ud)';return;}}
+        var loc=rows.find(function(r){{return String(r.location_id)===o.value;}});
+        var qty=loc?loc.qty:0;
+        var base=o.textContent.replace(/ \\(\\d+ ud\\)$/,'');
+        o.textContent=base+' ('+qty+' ud)';
+      }});
+    }});
 }}
 function closeTrModal(){{document.getElementById('tr-modal').classList.remove('open');}}
 document.getElementById('tr-modal').onclick=function(e){{if(e.target===this)closeTrModal();}};
 function doTransfer(){{
   var mid=document.getElementById('tr-mid').value;
   var qty=parseInt(document.getElementById('tr-qty').value);
-  var dir=document.getElementById('tr-dir').value;
+  var from_loc=document.getElementById('tr-from').value;
+  var to_loc=document.getElementById('tr-to').value;
   var notes=document.getElementById('tr-notes').value;
   if(!qty||qty<1){{alert('Cantidad mínima: 1');return;}}
+  if(from_loc===to_loc){{alert('Origen y destino deben ser diferentes');return;}}
   fetch(bp+'/api/materials/'+mid+'/transfer',{{method:'POST',
     headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{qty:qty,direction:dir,notes:notes}})}})
+    body:JSON.stringify({{qty:qty,from_loc:from_loc,to_loc:to_loc,notes:notes}})}})
     .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}});}})
     .then(function(res){{if(!res.ok){{alert(res.j.error||'Error');return;}}location.reload();}});
 }}
 
-// ── usage modal (uso por proyecto) ────────────────────────────────────────────
+// ── stock por ubicación modal ─────────────────────────────────────────────────
+function openLocStock(id,name){{
+  document.getElementById('ls-mat-name').textContent=name;
+  document.getElementById('ls-body').innerHTML='<p class="muted">Cargando…</p>';
+  document.getElementById('loc-stock-modal').classList.add('open');
+  fetch(bp+'/api/materials/'+id+'/stock_by_location')
+    .then(function(r){{return r.json();}})
+    .then(function(rows){{
+      if(!rows.length){{
+        document.getElementById('ls-body').innerHTML=
+          '<p class="muted" style="text-align:center;padding:20px">Sin stock registrado por ubicación</p>';
+        return;
+      }}
+      var html='<div class="tbl-wrap"><table><thead><tr>'
+        +'<th>Código</th><th>Ubicación</th><th>Almacén</th>'
+        +'<th style="text-align:center">Stock</th></tr></thead><tbody>';
+      rows.forEach(function(r){{
+        html+='<tr>'
+          +'<td><span class="chip">'+r.loc_code+'</span></td>'
+          +'<td>'+r.loc_name+'</td>'
+          +'<td class="muted">'+r.warehouse+'</td>'
+          +'<td style="text-align:center;font-weight:700">'+r.qty+'</td></tr>';
+      }});
+      html+='</tbody></table></div>';
+      document.getElementById('ls-body').innerHTML=html;
+    }});
+}}
+document.getElementById('loc-stock-modal').onclick=function(e){{
+  if(e.target===this)this.classList.remove('open');
+}};
+
+// ── usage modal ───────────────────────────────────────────────────────────────
 var _ST={{'requested':'Solicitado','assigned':'Asignado','consumed':'Consumido','returned':'Devuelto'}};
 var _ST_C={{'requested':'#6366f1','assigned':'#22c55e','consumed':'#f59e0b','returned':'#94a3b8'}};
 function openUsage(id,name){{
@@ -373,5 +573,48 @@ function openUsage(id,name){{
 document.getElementById('use-modal').onclick=function(e){{
   if(e.target===this)this.classList.remove('open');
 }};
+
+// ── location CRUD modal ───────────────────────────────────────────────────────
+function openNewLoc(){{
+  document.getElementById('loc-modal-title').textContent='Nueva ubicación';
+  document.getElementById('loc-id').value='';
+  document.getElementById('l-code').value='';
+  document.getElementById('l-name').value='';
+  document.getElementById('l-warehouse').value='Almacén Principal';
+  document.getElementById('l-desc').value='';
+  document.getElementById('l-active').checked=true;
+  document.getElementById('loc-modal').classList.add('open');
+}}
+function editLoc(l){{
+  document.getElementById('loc-modal-title').textContent='Editar ubicación';
+  document.getElementById('loc-id').value=l.id;
+  document.getElementById('l-code').value=l.code||'';
+  document.getElementById('l-name').value=l.name||'';
+  document.getElementById('l-warehouse').value=l.warehouse||'Almacén Principal';
+  document.getElementById('l-desc').value=l.description||'';
+  document.getElementById('l-active').checked=l.active!==0;
+  document.getElementById('loc-modal').classList.add('open');
+}}
+function closeLocModal(){{document.getElementById('loc-modal').classList.remove('open');}}
+document.getElementById('loc-modal').onclick=function(e){{if(e.target===this)closeLocModal();}};
+function saveLoc(){{
+  var id=document.getElementById('loc-id').value;
+  var d={{
+    code:document.getElementById('l-code').value.toUpperCase(),
+    name:document.getElementById('l-name').value,
+    warehouse:document.getElementById('l-warehouse').value||'Almacén Principal',
+    description:document.getElementById('l-desc').value,
+    active:document.getElementById('l-active').checked
+  }};
+  if(!d.code||!d.name){{alert('Código y nombre son obligatorios');return;}}
+  fetch(id?bp+'/api/locations/'+id:bp+'/api/locations',
+    {{method:id?'PUT':'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+}}
+function delLoc(id,name){{
+  if(!confirm('¿Eliminar ubicación "'+name+'"? Solo es posible si no tiene stock.'))return;
+  fetch(bp+'/api/locations/'+id,{{method:'DELETE'}})
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+}}
 </script>"""
     return _shell("inventory", user, content)

@@ -93,9 +93,9 @@ def _parse_multipart(h):
                 fields[name] = ''
     return fields, files
 
-def _stock_move(material_id, qty, direction, source, ref_id, user_id, notes=""):
-    run("INSERT INTO stock_movements (material_id,qty,direction,source,ref_id,user_id,notes) VALUES (?,?,?,?,?,?,?)",
-        (material_id, qty, direction, source, ref_id, user_id, notes))
+def _stock_move(material_id, qty, direction, source, ref_id, user_id, notes="", location_id=None):
+    run("INSERT INTO stock_movements (material_id,qty,direction,source,ref_id,user_id,notes,location_id) VALUES (?,?,?,?,?,?,?,?)",
+        (material_id, qty, direction, source, ref_id, user_id, notes, location_id))
 
 PROJ_COLORS = ["#2563eb","#16a34a","#d97706","#dc2626","#7c3aed","#0d9488",
                "#db2777","#ea580c","#65a30d","#0284c7"]
