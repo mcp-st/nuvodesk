@@ -1,77 +1,146 @@
 """Inventory page."""
-import os, json, re, mimetypes, calendar as _cal
-from datetime import datetime, date as _date, timedelta
-from core.db import PORT, BP, DATA_DIR, DB_PATH, FILES_DIR, q, q1, run, rs, r2d
-from core.helpers import (
-    _hash, _esc, _jattr, _now, _fmt_size, _fmt_duration, _parse_multipart, _stock_move,
-    PROJ_COLORS, _pcolor, STATUS_LABEL, STATUS_COLOR, PRIORITY_COLOR,
-    WORK_TYPES, _wt_badge, _badge, _pbadge,
-)
+import json
+from core.db import BP, q, q1, rs
+from core.helpers import _esc
 from web.layout import _shell
 
+
 def _inventory_page(user):
-    mats = rs(q("SELECT * FROM materials ORDER BY category, name"))
-    cats = sorted({m['category'] for m in mats if m.get('category')})
+    mats  = rs(q("SELECT * FROM materials ORDER BY category, name"))
+    cats  = sorted({m["category"] for m in mats if m.get("category")})
     moves = rs(q("""SELECT mv.*,m.name mat_name,m.code mat_code,u.display_name uname
         FROM stock_movements mv JOIN materials m ON m.id=mv.material_id
         LEFT JOIN users u ON u.id=mv.user_id
         ORDER BY mv.created_at DESC LIMIT 30"""))
 
-    cat_opts = "".join(f'<option value="{_esc(c)}">{_esc(c)}</option>' for c in cats)
+    critical = [m for m in mats if m["stock_min"] > 0 and m["stock_warehouse"] <= m["stock_min"]]
 
+    # ── low-stock panel ─────────────────────────────────────────────────────────
+    alert_panel = ""
+    if critical:
+        crit_rows = "".join(
+            f'<div style="display:flex;align-items:center;gap:10px;padding:6px 0;'
+            f'border-bottom:1px solid var(--border)">'
+            f'<span class="chip">{_esc(m["code"])}</span>'
+            f'<span style="flex:1;font-size:.85rem">{_esc(m["name"])}</span>'
+            f'<span style="font-size:.82rem;color:var(--red,#dc2626);font-weight:700;white-space:nowrap">'
+            f'{m["stock_warehouse"]} / mín {m["stock_min"]} {_esc(m["unit"])}</span>'
+            f'<button class="btn btn-ghost btn-icon" title="Ajustar stock" '
+            f'onclick="openAdjust({m["id"]},{json.dumps(m["name"])},{m["stock_warehouse"]})">±</button>'
+            f'</div>'
+            for m in critical)
+        alert_panel = (
+            f'<div class="card" style="border-left:4px solid #dc2626;padding:14px 16px;margin-bottom:16px">'
+            f'<div style="font-weight:700;margin-bottom:8px">⚠️ Stock crítico — {len(critical)} '
+            f'material{"es" if len(critical)!=1 else ""} por debajo del mínimo</div>'
+            f'{crit_rows}</div>')
+
+    # ── category options ─────────────────────────────────────────────────────────
+    cat_opts = "".join(f'<option value="{_esc(c)}">{_esc(c)}</option>' for c in cats)
+    cat_filter_btns = '<button class="cat-btn active" data-cat="">Todas</button>' + "".join(
+        f'<button class="cat-btn" data-cat="{_esc(c)}">{_esc(c)}</button>' for c in cats)
+
+    # ── materials table ──────────────────────────────────────────────────────────
     rows = ""
     for m in mats:
-        critical = m['stock_warehouse'] <= m['stock_min'] and m['stock_min'] > 0
-        low_style = 'color:var(--red);font-weight:700' if critical else ''
-        critical_icon = ' ⚠️' if critical else ''
-        rows += (f'<tr><td><span class="chip">{_esc(m["code"])}</span></td>'
-            f'<td><span class="fw7">{_esc(m["name"])}</span>{critical_icon}'
-            f'{"<br><span class=muted style=font-size:.72rem>"+_esc(m["description"])+"</span>" if m.get("description") else ""}</td>'
+        is_crit  = m["stock_min"] > 0 and m["stock_warehouse"] <= m["stock_min"]
+        low_sty  = "color:var(--red,#dc2626);font-weight:700" if is_crit else ""
+        crit_ico = " ⚠️" if is_crit else ""
+        rows += (
+            f'<tr data-name="{_esc((m["name"]+m["code"]).lower())}" '
+            f'data-cat="{_esc(m["category"] or "")}" '
+            f'data-crit="{1 if is_crit else 0}">'
+            f'<td><span class="chip">{_esc(m["code"])}</span></td>'
+            f'<td><span class="fw7">{_esc(m["name"])}</span>{crit_ico}'
+            f'{"<br><span class=muted style=font-size:.72rem>"+_esc(m["description"])+"</span>" if m.get("description") else ""}'
+            f'</td>'
             f'<td class="muted col-m-hide">{_esc(m["category"] or "—")}</td>'
-            f'<td style="text-align:center;{low_style}">{m["stock_warehouse"]}</td>'
-            f'<td style="text-align:center" class="col-m-hide">{m["stock_field"]}</td>'
+            f'<td style="text-align:center;{low_sty}">{m["stock_warehouse"]}</td>'
+            f'<td style="text-align:center">{m["stock_field"]}</td>'
             f'<td style="text-align:center" class="col-m-hide">{m["stock_warehouse"]+m["stock_field"]}</td>'
-            f'<td style="text-align:center" class="col-m-hide">{m["stock_min"]}</td>'
+            f'<td style="text-align:center" class="col-m-hide">{m["stock_min"] or "—"}</td>'
             f'<td class="muted col-m-hide">{_esc(m["unit"])}</td>'
-            f'<td>'
-            f'<button class="btn btn-ghost btn-icon" title="Ajustar stock" onclick="openAdjust({m["id"]},{json.dumps(m["name"])},{m["stock_warehouse"]})">±</button>'
+            f'<td style="white-space:nowrap">'
+            f'<button class="btn btn-ghost btn-icon" title="Ajustar almacén" '
+            f'onclick="openAdjust({m["id"]},{json.dumps(m["name"])},{m["stock_warehouse"]})">±</button>'
+            f'<button class="btn btn-ghost btn-icon" title="Transferir almacén↔campo" '
+            f'onclick="openTransfer({m["id"]},{json.dumps(m["name"])},{m["stock_warehouse"]},{m["stock_field"]})">⇄</button>'
+            f'<button class="btn btn-ghost btn-icon" title="Ver uso en proyectos" '
+            f'onclick="openUsage({m["id"]},{json.dumps(m["name"])})">📋</button>'
             f'<button class="btn btn-ghost btn-icon" onclick="editMat({json.dumps(dict(m))})">✏️</button>'
             f'<button class="btn btn-danger btn-icon" onclick="delMat({m["id"]})">✕</button>'
             f'</td></tr>')
 
+    # ── movements table ──────────────────────────────────────────────────────────
+    _SRC_LABEL = {
+        "adjust": "Ajuste", "kit": "Kit técnico", "kit_return": "Dev. kit",
+        "transfer_to_field": "→ Campo", "transfer_to_warehouse": "← Almacén",
+    }
     mv_rows = ""
     for mv in moves:
-        icon = '<span class="mv-in">+</span>' if mv['direction']=='in' else '<span class="mv-out">−</span>'
-        mv_rows += (f'<tr><td class="muted" style="font-size:.75rem;white-space:nowrap">{mv["created_at"][:16]}</td>'
+        icon = '<span class="mv-in">+</span>' if mv["direction"] == "in" else '<span class="mv-out">−</span>'
+        src_lbl = _SRC_LABEL.get(mv["source"] or "", mv["source"] or "—")
+        mv_rows += (
+            f'<tr>'
+            f'<td class="muted" style="font-size:.75rem;white-space:nowrap">{mv["created_at"][:16]}</td>'
             f'<td><span class="chip">{_esc(mv["mat_code"])}</span> {_esc(mv["mat_name"])}</td>'
             f'<td style="text-align:center">{icon} {mv["qty"]}</td>'
-            f'<td class="muted col-m-hide">{_esc(mv["source"] or "—")}</td>'
+            f'<td class="muted col-m-hide">{src_lbl}</td>'
             f'<td class="muted col-m-hide">{_esc(mv["uname"] or "—")}</td>'
-            f'<td class="muted col-m-hide" style="font-size:.78rem">{_esc(mv["notes"] or "")}</td></tr>')
+            f'<td class="muted col-m-hide" style="font-size:.78rem">{_esc(mv["notes"] or "")}</td>'
+            f'</tr>')
+
+    empty_mats = ('<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">'
+                  'Sin materiales</td></tr>')
+    empty_mvs  = ('<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">'
+                  'Sin movimientos</td></tr>')
 
     content = f"""
-<div class="toolbar"><h1>Inventario</h1>
+{alert_panel}
+<div class="toolbar"><h1>📦 Inventario</h1>
   <button class="btn btn-primary" onclick="openNewMat()">+ Material</button>
 </div>
-<div class="card">
-<div class="tbl-wrap"><table><thead><tr>
+
+<!-- filter bar -->
+<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+  <input id="inv-search" type="search" placeholder="Buscar nombre o código…"
+    style="padding:7px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:.85rem;
+           font-family:inherit;outline:none;min-width:200px;background:var(--surface)"
+    oninput="filterMats()">
+  <select id="inv-cat"
+    style="padding:7px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:.85rem;
+           font-family:inherit;background:var(--surface);outline:none"
+    onchange="filterMats()">
+    <option value="">Todas las categorías</option>{cat_opts}
+  </select>
+  <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer;white-space:nowrap">
+    <input type="checkbox" id="inv-crit" onchange="filterMats()"> Solo críticos ⚠️
+  </label>
+  <span id="inv-count" class="muted" style="font-size:.8rem;margin-left:auto"></span>
+</div>
+
+<div class="card" style="padding:0">
+<div class="tbl-wrap"><table id="inv-table"><thead><tr>
   <th>Código</th><th>Nombre</th><th class="col-m-hide">Categoría</th>
-  <th style="text-align:center">Almacén</th><th style="text-align:center" class="col-m-hide">Campo</th>
+  <th style="text-align:center">Almacén</th>
+  <th style="text-align:center">Campo</th>
   <th style="text-align:center" class="col-m-hide">Total</th>
   <th style="text-align:center" class="col-m-hide">Mínimo</th>
   <th class="col-m-hide">Ud</th><th></th>
-</tr></thead><tbody>{rows or "<tr><td colspan='9' class='muted' style='text-align:center;padding:24px'>Sin materiales</td></tr>"}</tbody></table></div>
+</tr></thead>
+<tbody id="inv-tbody">{rows or empty_mats}</tbody>
+</table></div>
 </div>
 
-<div class="card">
-  <h2>Últimos movimientos de stock</h2>
+<div class="card" style="margin-top:16px">
+  <h2 style="margin:0 0 12px">Últimos movimientos</h2>
   <div class="tbl-wrap"><table><thead><tr>
     <th>Fecha</th><th>Material</th><th style="text-align:center">Cant.</th>
-    <th class="col-m-hide">Origen</th><th class="col-m-hide">Usuario</th><th class="col-m-hide">Notas</th>
-  </tr></thead><tbody>{mv_rows or "<tr><td colspan='6' class='muted' style='text-align:center;padding:16px'>Sin movimientos</td></tr>"}</tbody></table></div>
+    <th class="col-m-hide">Tipo</th><th class="col-m-hide">Usuario</th><th class="col-m-hide">Notas</th>
+  </tr></thead><tbody>{mv_rows or empty_mvs}</tbody></table></div>
 </div>
 
-<!-- modal material -->
+<!-- ── modal: nuevo/editar material ── -->
 <div class="modal-bg" id="mat-modal">
 <div class="modal">
   <h2 id="mat-modal-title">Nuevo material</h2>
@@ -96,8 +165,8 @@ def _inventory_page(user):
   <div class="form-row">
     <div><label>Stock almacén</label><input type="number" id="m-wh" min="0" value="0"></div>
     <div><label>Stock campo</label><input type="number" id="m-fi" min="0" value="0"></div>
+    <div><label>Stock mínimo</label><input type="number" id="m-min" min="0" value="0"></div>
   </div>
-  <div class="form-row"><div><label>Stock mínimo</label><input type="number" id="m-min" min="0" value="0"></div></div>
   <div class="modal-foot">
     <button type="button" class="btn btn-ghost" onclick="closeMatModal()">Cancelar</button>
     <button type="submit" class="btn btn-primary">Guardar</button>
@@ -105,12 +174,12 @@ def _inventory_page(user):
   </form>
 </div></div>
 
-<!-- modal ajuste rápido -->
+<!-- ── modal: ajuste rápido almacén ── -->
 <div class="modal-bg" id="adj-modal">
 <div class="modal" style="max-width:360px">
-  <h2 id="adj-title">Ajuste de stock</h2>
+  <h2 id="adj-title">Ajuste de stock — Almacén</h2>
   <input type="hidden" id="adj-mid">
-  <div class="field"><label>Variación (+entrada / -salida)</label>
+  <div class="field"><label>Variación (+entrada / −salida)</label>
     <input type="number" id="adj-qty" placeholder="Ej: +10 o -5"></div>
   <div class="field"><label>Notas</label>
     <input id="adj-notes" placeholder="Motivo del ajuste"></div>
@@ -120,8 +189,64 @@ def _inventory_page(user):
   </div>
 </div></div>
 
+<!-- ── modal: transferencia almacén ↔ campo ── -->
+<div class="modal-bg" id="tr-modal">
+<div class="modal" style="max-width:380px">
+  <h2>Transferir stock</h2>
+  <div id="tr-info" class="muted" style="font-size:.82rem;margin-bottom:12px"></div>
+  <input type="hidden" id="tr-mid">
+  <div class="form-row">
+    <div><label>Dirección</label>
+      <select id="tr-dir">
+        <option value="to_field">Almacén → Campo</option>
+        <option value="to_warehouse">Campo → Almacén</option>
+      </select>
+    </div>
+    <div><label>Cantidad</label>
+      <input type="number" id="tr-qty" min="1" value="1"></div>
+  </div>
+  <div class="field"><label>Notas</label>
+    <input id="tr-notes" placeholder="Motivo (opcional)"></div>
+  <div class="modal-foot">
+    <button type="button" class="btn btn-ghost" onclick="closeTrModal()">Cancelar</button>
+    <button class="btn btn-primary" onclick="doTransfer()">Transferir</button>
+  </div>
+</div></div>
+
+<!-- ── modal: uso en proyectos ── -->
+<div class="modal-bg" id="use-modal">
+<div class="modal">
+  <h2>Uso en proyectos: <span id="use-mat-name" style="font-weight:400"></span></h2>
+  <div id="use-body" style="min-height:60px"><p class="muted">Cargando…</p></div>
+  <div class="modal-foot">
+    <button class="btn btn-ghost"
+      onclick="document.getElementById('use-modal').classList.remove('open')">Cerrar</button>
+  </div>
+</div></div>
+
 <script>
 var bp={json.dumps(BP)};
+
+// ── filter ────────────────────────────────────────────────────────────────────
+function filterMats(){{
+  var q=(document.getElementById('inv-search').value||'').toLowerCase();
+  var cat=(document.getElementById('inv-cat').value||'').toLowerCase();
+  var crit=document.getElementById('inv-crit').checked;
+  var rows=document.querySelectorAll('#inv-tbody tr');
+  var shown=0;
+  rows.forEach(function(r){{
+    var name=(r.dataset.name||'');
+    var rc=(r.dataset.cat||'').toLowerCase();
+    var isCrit=r.dataset.crit==='1';
+    var ok=(!q||name.includes(q))&&(!cat||rc===cat)&&(!crit||isCrit);
+    r.style.display=ok?'':'none';
+    if(ok)shown++;
+  }});
+  document.getElementById('inv-count').textContent=shown+' resultado'+(shown!==1?'s':'');
+}}
+(function(){{filterMats();}}());
+
+// ── mat modal ─────────────────────────────────────────────────────────────────
 function openNewMat(){{
   document.getElementById('mat-modal-title').textContent='Nuevo material';
   document.getElementById('mat-id').value='';
@@ -148,8 +273,10 @@ document.getElementById('mat-modal').onclick=function(e){{if(e.target===this)clo
 document.getElementById('mat-form').onsubmit=function(e){{
   e.preventDefault();
   var id=document.getElementById('mat-id').value;
-  var d={{code:document.getElementById('m-code').value,name:document.getElementById('m-name').value,
-    category:document.getElementById('m-cat').value,description:document.getElementById('m-desc').value,
+  var d={{code:document.getElementById('m-code').value,
+    name:document.getElementById('m-name').value,
+    category:document.getElementById('m-cat').value,
+    description:document.getElementById('m-desc').value,
     unit:document.getElementById('m-unit').value,
     stock_warehouse:parseInt(document.getElementById('m-wh').value)||0,
     stock_field:parseInt(document.getElementById('m-fi').value)||0,
@@ -159,12 +286,14 @@ document.getElementById('mat-form').onsubmit=function(e){{
     .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
 }};
 function delMat(id){{
-  if(!confirm('¿Eliminar material?')) return;
+  if(!confirm('¿Eliminar material?'))return;
   fetch(bp+'/api/materials/'+id,{{method:'DELETE'}})
     .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
 }}
+
+// ── adjust modal (almacén) ────────────────────────────────────────────────────
 function openAdjust(id,name,cur){{
-  document.getElementById('adj-title').textContent='Ajuste: '+name+' (actual: '+cur+')';
+  document.getElementById('adj-title').textContent='Ajuste almacén: '+name+' (actual: '+cur+')';
   document.getElementById('adj-mid').value=id;
   document.getElementById('adj-qty').value='';
   document.getElementById('adj-notes').value='';
@@ -181,7 +310,68 @@ function doAdjust(){{
     headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{qty:qty,notes:notes}})}})
     .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
 }}
+
+// ── transfer modal (almacén ↔ campo) ─────────────────────────────────────────
+function openTransfer(id,name,wh,fi){{
+  document.getElementById('tr-mid').value=id;
+  document.getElementById('tr-info').textContent=
+    name+' — Almacén: '+wh+' · Campo: '+fi;
+  document.getElementById('tr-qty').value=1;
+  document.getElementById('tr-notes').value='';
+  document.getElementById('tr-modal').classList.add('open');
+}}
+function closeTrModal(){{document.getElementById('tr-modal').classList.remove('open');}}
+document.getElementById('tr-modal').onclick=function(e){{if(e.target===this)closeTrModal();}};
+function doTransfer(){{
+  var mid=document.getElementById('tr-mid').value;
+  var qty=parseInt(document.getElementById('tr-qty').value);
+  var dir=document.getElementById('tr-dir').value;
+  var notes=document.getElementById('tr-notes').value;
+  if(!qty||qty<1){{alert('Cantidad mínima: 1');return;}}
+  fetch(bp+'/api/materials/'+mid+'/transfer',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{qty:qty,direction:dir,notes:notes}})}})
+    .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}});}})
+    .then(function(res){{if(!res.ok){{alert(res.j.error||'Error');return;}}location.reload();}});
+}}
+
+// ── usage modal (uso por proyecto) ────────────────────────────────────────────
+var _ST={{'requested':'Solicitado','assigned':'Asignado','consumed':'Consumido','returned':'Devuelto'}};
+var _ST_C={{'requested':'#6366f1','assigned':'#22c55e','consumed':'#f59e0b','returned':'#94a3b8'}};
+function openUsage(id,name){{
+  document.getElementById('use-mat-name').textContent=name;
+  document.getElementById('use-body').innerHTML='<p class="muted">Cargando…</p>';
+  document.getElementById('use-modal').classList.add('open');
+  fetch(bp+'/api/materials/'+id+'/assignments')
+    .then(function(r){{return r.json();}})
+    .then(function(rows){{
+      if(!rows.length){{
+        document.getElementById('use-body').innerHTML=
+          '<p class="muted" style="text-align:center;padding:20px">Sin asignaciones a proyectos</p>';
+        return;
+      }}
+      var html='<div class="tbl-wrap"><table><thead><tr>'
+        +'<th>Proyecto</th><th style="text-align:center">Sol.</th>'
+        +'<th style="text-align:center">Asig.</th><th style="text-align:center">Cons.</th>'
+        +'<th style="text-align:center">Dev.</th><th>Estado</th></tr></thead><tbody>';
+      rows.forEach(function(a){{
+        var sc=_ST_C[a.status]||'#94a3b8';
+        html+='<tr>'
+          +'<td><a href="'+bp+'/projects/'+a.pid+'" style="font-weight:700">'+a.pname+'</a>'
+          +'<span class="muted" style="font-size:.72rem;margin-left:6px">'+a.pstatus+'</span></td>'
+          +'<td style="text-align:center">'+a.qty_requested+'</td>'
+          +'<td style="text-align:center">'+a.qty_assigned+'</td>'
+          +'<td style="text-align:center">'+a.qty_consumed+'</td>'
+          +'<td style="text-align:center">'+a.qty_returned+'</td>'
+          +'<td><span style="background:'+sc+';color:#fff;border-radius:4px;padding:2px 7px;font-size:.72rem">'
+          +(_ST[a.status]||a.status)+'</span></td></tr>';
+      }});
+      html+='</tbody></table></div>';
+      document.getElementById('use-body').innerHTML=html;
+    }});
+}}
+document.getElementById('use-modal').onclick=function(e){{
+  if(e.target===this)this.classList.remove('open');
+}};
 </script>"""
     return _shell("inventory", user, content)
-
-# ── kit de técnico ────────────────────────────────────────────────────────────

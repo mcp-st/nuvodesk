@@ -1927,6 +1927,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, fdata, "image/jpeg", {"Content-Disposition":"inline"}); return
         if rel == "/api/materials":
             self._json(200, rs(q("SELECT * FROM materials ORDER BY name"))); return
+        m = re.match(r"^/api/materials/(\d+)/assignments$", rel)
+        if m:
+            mid = int(m.group(1))
+            rows = rs(q("""SELECT a.*,p.name pname,p.status pstatus,p.id pid
+                FROM assignments a JOIN projects p ON p.id=a.project_id
+                WHERE a.material_id=? ORDER BY a.updated_at DESC""", (mid,)))
+            self._json(200, rows); return
         m = re.match(r"^/api/projects/(\d+)/members$", rel)
         if m:
             self._json(200, rs(q("""SELECT pm.*,u.display_name uname FROM project_members pm
@@ -2522,7 +2529,7 @@ class Handler(BaseHTTPRequestHandler):
                  int(data.get("stock_min") or 0),data.get("category","")))
             self._json(201, {"id":mid}); return
 
-        # stock adjust
+        # stock adjust (warehouse)
         m = re.match(r"^/api/materials/(\d+)/adjust$", rel)
         if m:
             mid = int(m.group(1))
@@ -2536,6 +2543,32 @@ class Handler(BaseHTTPRequestHandler):
             direction = "in" if qty > 0 else "out"
             _stock_move(mid, abs(qty), direction, "adjust", 0, sess["id"], data.get("notes",""))
             self._json(200, {"ok":True,"new_stock":new_wh}); return
+
+        # stock transfer: warehouse ↔ field
+        m = re.match(r"^/api/materials/(\d+)/transfer$", rel)
+        if m:
+            mid = int(m.group(1))
+            qty = int(data.get("qty") or 0)
+            direction = (data.get("direction") or "").strip()
+            if qty <= 0: self._json(400, {"error":"Cantidad debe ser > 0"}); return
+            if direction not in ("to_field", "to_warehouse"):
+                self._json(400, {"error":"direction debe ser to_field o to_warehouse"}); return
+            mat = r2d(q1("SELECT * FROM materials WHERE id=?", (mid,)))
+            if not mat: self._json(404, {"error":"Not found"}); return
+            notes = data.get("notes", "")
+            if direction == "to_field":
+                if mat["stock_warehouse"] < qty:
+                    self._json(400, {"error":f"Stock en almacén insuficiente ({mat['stock_warehouse']} disponibles)"}); return
+                run("UPDATE materials SET stock_warehouse=stock_warehouse-?,stock_field=stock_field+?,updated_at=datetime('now') WHERE id=?",
+                    (qty, qty, mid))
+                _stock_move(mid, qty, "out", "transfer_to_field", 0, sess["id"], notes or "Almacén → Campo")
+            else:
+                if mat["stock_field"] < qty:
+                    self._json(400, {"error":f"Stock en campo insuficiente ({mat['stock_field']} disponibles)"}); return
+                run("UPDATE materials SET stock_field=stock_field-?,stock_warehouse=stock_warehouse+?,updated_at=datetime('now') WHERE id=?",
+                    (qty, qty, mid))
+                _stock_move(mid, qty, "in", "transfer_to_warehouse", 0, sess["id"], notes or "Campo → Almacén")
+            self._json(200, {"ok":True}); return
 
         # assignments
         m = re.match(r"^/api/projects/(\d+)/assignments$", rel)
