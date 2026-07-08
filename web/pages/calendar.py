@@ -11,9 +11,14 @@ _DOW_SHORT   = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
 _DOW_FULL    = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
 _TYPE_ICON   = {"physical":"⚡","online":"🌐","meeting":"👥","travel":"✈️","other":"📌"}
 _TYPE_LABEL  = {"physical":"Presencial","online":"Online","meeting":"Reunión","travel":"Viaje","other":"Otro"}
-_AVAIL_ICON  = {"available":"","remote":"🏠","traveling":"✈️","off":"—"}
-_AVAIL_LABEL = {"available":"Disponible","remote":"Remoto","traveling":"Desplazado","off":"Libre"}
-_AVAIL_COLOR = {"available":"#16a34a","remote":"#3b82f6","traveling":"#d97706","off":"#94a3b8"}
+_AVAIL_ICON  = {"available":"","remote":"🏠","traveling":"✈️","off":"—",
+                "vacation":"🏖","day_off":"📅","sick":"🤒"}
+_AVAIL_LABEL = {"available":"Disponible","remote":"Remoto","traveling":"Desplazado","off":"Libre",
+                "vacation":"Vacaciones","day_off":"Día libre","sick":"Baja médica"}
+_AVAIL_COLOR = {"available":"#16a34a","remote":"#3b82f6","traveling":"#d97706","off":"#94a3b8",
+                "vacation":"#2563eb","day_off":"#7c3aed","sick":"#dc2626"}
+_AVAIL_BG    = {"off":"var(--border)","traveling":"repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(255,165,0,.15) 3px,rgba(255,165,0,.15) 6px)",
+                "vacation":"#dbeafe","day_off":"#ede9fe","sick":"#fee2e2"}
 
 
 def _avail_picker_html(uid, d_str, status, is_admin, compact=True):
@@ -34,7 +39,7 @@ def _avail_picker_html(uid, d_str, status, is_admin, compact=True):
         f'style="background:{_AVAIL_COLOR[s]};color:#fff;border:none;border-radius:5px;'
         f'padding:4px 8px;font-size:.72rem;cursor:pointer;text-align:left;white-space:nowrap;display:block;width:100%">'
         f'{_AVAIL_ICON.get(s,"") or "✓"} {_AVAIL_LABEL[s]}</button>'
-        for s in ("available", "remote", "traveling", "off"))
+        for s in ("available", "remote", "traveling", "off", "vacation", "day_off", "sick"))
     text = f' {label}' if not compact else ""
     return (f'<div class="avp" style="position:relative;display:inline-block">'
             f'<button class="avp-btn" onclick="toggleAvp(this)" style="{badge}" title="{label}">'
@@ -64,11 +69,14 @@ document.addEventListener('click',function(e){
     document.querySelectorAll('.avp-menu').forEach(function(m){m.style.display='none';});
 });
 function resolveCR(id,action){
-  if(!confirm(action==='approve'?'¿Aprobar esta solicitud?':'¿Rechazar esta solicitud?'))return;
-  fetch(bp+'/api/change_requests/'+id+'/resolve',{method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({action:action})})
-  .then(function(r){if(r.ok)location.reload();else r.json().then(function(j){alert(j.error||'Error');});});
+  ConfirmDialog.show(action==='approve'?'¿Aprobar esta solicitud?':'¿Rechazar esta solicitud?','')
+    .then(function(ok){
+      if(!ok)return;
+      fetch(bp+'/api/change_requests/'+id+'/resolve',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:action})})
+      .then(function(r){if(r.ok)location.reload();else r.json().then(function(j){Toast.show(j.error||'Error','err');});});
+    });
 }"""
 
 
@@ -217,8 +225,8 @@ function doCreateActivity(){{
   fetch(bp+'/api/activities',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
     .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}});}})
     .then(function(res){{
-      if(!res.ok){{alert(res.j.error||'Error');return;}}
-      if(res.j.warning){{alert('Guardado — Aviso: '+res.j.warning);}}
+      if(!res.ok){{Toast.show(res.j.error||'Error','err');return;}}
+      if(res.j.warning){{Toast.show('Aviso: '+res.j.warning,'warn');}}
       location.reload();
     }});
 }}"""
@@ -278,11 +286,8 @@ def _calendar_page(user, year, month):
             is_tc = (first + timedelta(days=i) == today)
             td_cls = ' class="today-col"' if is_tc else ""
             status = avail.get((t["id"], d_str), "available")
-            bg = ""
-            if status == "off":
-                bg = "background:var(--border)"
-            elif status == "traveling":
-                bg = "background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(255,165,0,.15) 3px,rgba(255,165,0,.15) 6px)"
+            _bg_val = _AVAIL_BG.get(status, "")
+            bg = f"background:{_bg_val}" if _bg_val else ""
             day_acts = [a for a in act_map.get(d_str, []) if a["user_id"] == t["id"]]
             chips = ""
             for a in day_acts[:2]:
@@ -349,7 +354,10 @@ def _calendar_page(user, year, month):
 
 <div style="margin-top:10px;font-size:.75rem;color:var(--muted)">
   ⚡ Presencial &nbsp; 🌐 Online &nbsp; 👥 Reunión &nbsp; ✈️ Viaje &nbsp; 📌 Otro &nbsp;|&nbsp;
-  ⚠️ Solicitud pendiente &nbsp;|&nbsp; fondo rayado = técnico desplazado · gris = día libre
+  ⚠️ Solicitud pendiente &nbsp;|&nbsp; fondo rayado = desplazado · gris = libre &nbsp;
+  <span style="background:#dbeafe;border-radius:3px;padding:1px 5px">🏖 Vacaciones</span> &nbsp;
+  <span style="background:#ede9fe;border-radius:3px;padding:1px 5px">📅 Día libre</span> &nbsp;
+  <span style="background:#fee2e2;border-radius:3px;padding:1px 5px">🤒 Baja</span>
 </div>
 
 {act_modal}
@@ -359,7 +367,7 @@ var bp={json.dumps(BP)};
 {act_js}
 {_avail_cr_js()}
 </script>"""
-    return _shell("calendar", user, content)
+    return _shell("calendar", user, content, title="Calendario")
 
 
 # ── Week view ──────────────────────────────────────────────────────────────────
@@ -601,15 +609,18 @@ function doCreateLog(){{
   }};
   fetch(bp+'/api/work_logs',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
     .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}});}})
-    .then(function(res){{if(!res.ok){{alert(res.j.error||'Error');return;}}location.reload();}});
+    .then(function(res){{if(!res.ok){{Toast.show(res.j.error||'Error','err');return;}}location.reload();}});
 }}
 function delWorkLog(id){{
-  if(!confirm('¿Eliminar este registro de horas?')) return;
-  fetch(bp+'/api/work_logs/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+  ConfirmDialog.show('¿Eliminar este registro de horas?','')
+    .then(function(ok){{
+      if(!ok)return;
+      fetch(bp+'/api/work_logs/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+    }});
 }}
 {_avail_cr_js()}
 </script>"""
-    return _shell("calendar", user, content)
+    return _shell("calendar", user, content, title="Calendario")
 
 
 # ── Day view ───────────────────────────────────────────────────────────────────
@@ -908,7 +919,7 @@ function doAddSlot(){{
   var allday=document.getElementById('sl-allday')?document.getElementById('sl-allday').checked:false;
   var hs=parseInt(document.getElementById('sl-hs').value);
   var he=parseInt(document.getElementById('sl-he').value);
-  if(!allday&&he<=hs){{alert('La hora fin debe ser posterior a la hora inicio');return;}}
+  if(!allday&&he<=hs){{Toast.show('La hora fin debe ser posterior a la hora inicio','err');return;}}
   var d={{
     user_id:document.getElementById('sl-user').value,
     project_id:document.getElementById('sl-proj').value,
@@ -922,14 +933,17 @@ function doAddSlot(){{
   fetch(bp+'/api/activities',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
     .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}});}})
     .then(function(res){{
-      if(!res.ok){{alert(res.j.error||'Error');return;}}
-      if(res.j.warning){{alert('Guardado — Aviso: '+res.j.warning);}}
+      if(!res.ok){{Toast.show(res.j.error||'Error','err');return;}}
+      if(res.j.warning){{Toast.show('Aviso: '+res.j.warning,'warn');}}
       location.reload();
     }});
 }}
 function delActivity(id){{
-  if(!confirm('¿Eliminar esta actividad?')) return;
-  fetch(bp+'/api/activities/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+  ConfirmDialog.show('¿Eliminar esta actividad?','')
+    .then(function(ok){{
+      if(!ok)return;
+      fetch(bp+'/api/activities/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+    }});
 }}
 function openCR(id){{
   document.getElementById('cr-act-id').value=id;
@@ -940,10 +954,10 @@ function doSendCR(){{
   var d={{activity_id:parseInt(id),
     type:document.getElementById('cr-type').value,
     message:document.getElementById('cr-msg').value}};
-  if(!d.message.trim()){{alert('El mensaje es obligatorio');return;}}
+  if(!d.message.trim()){{Toast.show('El mensaje es obligatorio','err');return;}}
   fetch(bp+'/api/change_requests',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
     .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}});}})
-    .then(function(res){{if(!res.ok){{alert(res.j.error||'Error');return;}}location.reload();}});
+    .then(function(res){{if(!res.ok){{Toast.show(res.j.error||'Error','err');return;}}location.reload();}});
 }}
 (function(){{
   var now=new Date();
@@ -968,8 +982,8 @@ function doDayLog(){{
   }};
   fetch(bp+'/api/work_logs',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
     .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}});}})
-    .then(function(res){{if(!res.ok){{alert(res.j.error||'Error');return;}}location.reload();}});
+    .then(function(res){{if(!res.ok){{Toast.show(res.j.error||'Error','err');return;}}location.reload();}});
 }}
 {_avail_cr_js()}
 </script>"""
-    return _shell("calendar", user, content)
+    return _shell("calendar", user, content, title="Calendario")

@@ -85,10 +85,13 @@ function deleteNotif(id,btn){{
     .then(function(r){{if(r.ok) btn.closest('[style*="border-bottom"]').remove();}});
 }}
 function deleteAll(){{
-  if(!confirm('¿Eliminar todas las notificaciones?')) return;
-  fetch(bp+'/api/notifications',{{method:'DELETE'}})
-    .then(function(r){{if(r.ok) location.reload();}});
+  ConfirmDialog.show('¿Eliminar todas las notificaciones?','')
+    .then(function(ok){{
+      if(!ok)return;
+      fetch(bp+'/api/notifications',{{method:'DELETE'}})
+        .then(function(r){{if(r.ok) location.reload();}});
+    }});
 }}
 </script>"""
 
-    return _shell("notifications", user, content)
+    return _shell("notifications", user, content, title="Notificaciones")

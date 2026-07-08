@@ -24,7 +24,8 @@ from core.helpers import (
     _hash, _check_pw, _esc, _jattr, _now, _fmt_size,
     _parse_multipart, _stock_move,
     PROJ_COLORS, _pcolor, STATUS_LABEL, STATUS_COLOR, PRIORITY_COLOR,
-    WORK_TYPES, _wt_badge, _badge, _pbadge,
+    WORK_TYPES, _wt_badge, _badge, _badge2, _pbadge, _kpi_card,
+    _sla_badge,
 )
 
 # ── schema ────────────────────────────────────────────────────────────────────
@@ -335,6 +336,64 @@ MIGRATIONS = [
         UNIQUE(material_id, location_id)
     )""",
     "ALTER TABLE stock_movements ADD COLUMN location_id INTEGER DEFAULT NULL REFERENCES warehouse_locations(id)",
+    # Recurrencia en proyectos
+    "ALTER TABLE projects ADD COLUMN recurrence TEXT DEFAULT 'none'",
+    "ALTER TABLE projects ADD COLUMN recurrence_parent_id INTEGER DEFAULT NULL",
+    # Costes para rentabilidad
+    "ALTER TABLE materials ADD COLUMN unit_cost REAL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN labor_rate REAL DEFAULT 0",
+    # SLA objetivo por proyecto
+    "ALTER TABLE projects ADD COLUMN sla_hours REAL DEFAULT 0",
+    # Inventario técnico (material en campo por técnico)
+    """CREATE TABLE IF NOT EXISTS tech_inventory (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+        qty         REAL NOT NULL DEFAULT 0,
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(user_id, material_id)
+    )""",
+    # Certificaciones de técnicos
+    """CREATE TABLE IF NOT EXISTS user_certifications (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        cert_name   TEXT NOT NULL,
+        cert_code   TEXT DEFAULT '',
+        issued_date TEXT DEFAULT '',
+        expires_date TEXT DEFAULT '',
+        notes       TEXT DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    # Gantt: fecha de inicio por tarea
+    "ALTER TABLE tasks ADD COLUMN start_date TEXT DEFAULT ''",
+    # Comentarios por tarea (hilo de discusión individual)
+    """CREATE TABLE IF NOT EXISTS task_comments (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        user_id     INTEGER NOT NULL REFERENCES users(id),
+        body        TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    # Dependencias entre tareas (A bloquea a B)
+    """CREATE TABLE IF NOT EXISTS task_dependencies (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        depends_on INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(task_id, depends_on)
+    )""",
+    # Plantillas de proyecto reutilizables
+    """CREATE TABLE IF NOT EXISTS project_templates (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        name            TEXT NOT NULL,
+        description     TEXT DEFAULT '',
+        work_type       TEXT DEFAULT 'proyecto',
+        estimated_hours REAL DEFAULT 0,
+        tasks_json      TEXT DEFAULT '[]',
+        created_by      INTEGER REFERENCES users(id),
+        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
 ]
 
 def init_db():
@@ -411,6 +470,8 @@ from core.notify import _notify, send_email, get_setting, set_setting
 from web.pages.misc import _login_page, _download_page, _set_password_page
 from web.pages.dashboard import _dashboard
 from web.pages.projects import _projects_page, _build_kanban, _build_file_grid
+from web.pages.field import _field_page
+from web.pages.clients import _clients_page, _client_detail
 def _project_detail(user, pid):
     p = r2d(q1("""SELECT p.*,u.display_name tech FROM projects p
         LEFT JOIN users u ON u.id=p.assigned_to WHERE p.id=?""", (pid,)))
@@ -419,7 +480,10 @@ def _project_detail(user, pid):
     tasks = rs(q("""SELECT t.*,
         (SELECT COUNT(*) FROM task_checklist c WHERE c.task_id=t.id) cl_t,
         (SELECT COUNT(*) FROM task_checklist c WHERE c.task_id=t.id AND c.done=1) cl_d,
-        (SELECT COUNT(*) FROM task_photos tp WHERE tp.task_id=t.id) photo_count
+        (SELECT COUNT(*) FROM task_photos tp WHERE tp.task_id=t.id) photo_count,
+        (SELECT COUNT(*) FROM task_comments tc WHERE tc.task_id=t.id) comment_count,
+        (SELECT GROUP_CONCAT(dt.title,'|') FROM task_dependencies td
+         JOIN tasks dt ON dt.id=td.depends_on WHERE td.task_id=t.id) dep_names
         FROM tasks t WHERE t.project_id=?
         ORDER BY CASE t.status WHEN 'blocked' THEN 0 WHEN 'in_progress' THEN 1
           WHEN 'pending' THEN 2 ELSE 3 END, t.priority DESC""", (pid,)))
@@ -469,14 +533,15 @@ def _project_detail(user, pid):
     kit_recs = rs(q("""SELECT pk.*,u.display_name uname
         FROM project_kit pk LEFT JOIN users u ON u.id=pk.added_by
         WHERE pk.project_id=? ORDER BY pk.created_at DESC""", (pid,)))
+    kit_pending_count = sum(1 for kr in kit_recs if kr.get('status', 'pending') == 'pending')
 
-    mats = rs(q("SELECT id,code,name,unit,stock_warehouse FROM materials ORDER BY name"))
+    mats = rs(q("SELECT id,code,name,unit,stock_warehouse,stock_min FROM materials ORDER BY name"))
     mat_opts = "".join(
-        f'<option value="{m["id"]}" data-stock="{m["stock_warehouse"]}">'
+        f'<option value="{m["id"]}" data-stock="{m["stock_warehouse"]}" data-stockmin="{m["stock_min"] or 0}">'
         f'[{_esc(m["code"])}] {_esc(m["name"])} ({_esc(m["unit"])})</option>'
         for m in mats)
 
-    # ── task rows (no assigned_to shown — tasks are team work) ──
+    # ── task rows ──
     t_rows = ""
     for t in tasks:
         cl_pct = int(t['cl_d']/t['cl_t']*100) if t['cl_t'] else -1
@@ -486,18 +551,37 @@ def _project_detail(user, pid):
                        f'<div class="progress-bar" style="width:{cl_pct}%"></div></div>'
                        f'<span class="muted" style="font-size:.7rem"> {t["cl_d"]}/{t["cl_t"]}</span>')
         done_btn_style = 'background:var(--green);color:#fff' if t['status']=='done' else ''
-        t_rows += (f'<tr><td>'
+        t_crit = ' class="nd-crit"' if t['status'] == 'blocked' else ''
+        cm_count = t.get('comment_count') or 0
+        cm_style = 'color:var(--primary);font-weight:600' if cm_count else 'opacity:.4'
+        cm_lbl = f'💬{cm_count}' if cm_count else '💬'
+        dep_html = ""
+        dep_names_raw = t.get('dep_names') or ""
+        if dep_names_raw:
+            dep_parts = [_esc(d[:35]) for d in dep_names_raw.split('|') if d]
+            dep_html = f'<br><span style="font-size:.7rem;color:var(--s-warn)">🔗 {", ".join(dep_parts)}</span>'
+        safe_t = {k: v for k, v in dict(t).items() if isinstance(v, (str, int, float, type(None)))}
+        t_rows += (f'<tr{t_crit}><td>'
             f'<button class="btn btn-ghost btn-icon" style="{done_btn_style}" '
             f'onclick="toggleTask({t["id"]},{json.dumps(t["status"])})" title="Toggle estado">✓</button></td>'
             f'<td><span class="fw7">{_esc(t["title"])}</span>{cl_html}'
+            f'{dep_html}'
             f'{"<br><span class=muted style=font-size:.75rem>"+_esc(t["description"])+"</span>" if t.get("description") else ""}</td>'
-            f'<td>{_badge(t["status"])}</td>'
+            f'<td>{_badge2(t["status"])}</td>'
             f'<td class="col-m-hide">{_pbadge(t["priority"])}</td>'
             f'<td class="muted col-m-hide">{_esc((t["due_date"] or "—")[:10])}</td>'
-            f'<td>'
-            f'<button class="btn btn-ghost btn-icon" onclick="openChecklist({t["id"]},{json.dumps(t["title"])})">☑</button>'
-            f'<button class="btn btn-ghost btn-icon" onclick="editTask({json.dumps(dict(t))})">✏️</button>'
-            f'<button class="btn btn-danger btn-icon" onclick="delTask({t["id"]})">✕</button>'
+            f'<td style="white-space:nowrap">'
+            f'<button class="btn btn-ghost btn-icon" style="{cm_style};font-size:.78rem" '
+            f'onclick="openTaskComments({t["id"]},{json.dumps(t["title"])})" title="Comentarios">{cm_lbl}</button>'
+            f'<button class="btn btn-ghost btn-icon" onclick="openChecklist({t["id"]},{json.dumps(t["title"])})" title="Checklist">☑</button>'
+            f'<div class="nd-ovfl-wrap" style="display:inline-block">'
+            f'<button class="btn btn-ghost btn-icon" onclick="ndOverflow(this)" title="Más opciones">⋯</button>'
+            f'<div class="nd-ovfl-drop">'
+            f'<button class="nd-ovfl-item" onclick="openTaskComments({t["id"]},{json.dumps(t["title"])})">💬 Comentarios</button>'
+            f'<button class="nd-ovfl-item" onclick="openTaskPhotos({t["id"]},{json.dumps(t["title"])})">📷 Fotos</button>'
+            f'<button class="nd-ovfl-item" onclick="editTask({json.dumps(safe_t)})">✏️ Editar</button>'
+            f'<button class="nd-ovfl-item danger" onclick="delTask({t["id"]})">✕ Eliminar</button>'
+            f'</div></div>'
             f'</td></tr>')
 
     # ── assignment rows ──
@@ -508,7 +592,7 @@ def _project_detail(user, pid):
             f'<td style="text-align:center">{a["qty_assigned"]}</td>'
             f'<td style="text-align:center">{a["qty_consumed"]}</td>'
             f'<td style="text-align:center">{a["qty_returned"]}</td>'
-            f'<td>{_badge(a["status"])}</td>'
+            f'<td>{_badge2(a["status"])}</td>'
             f'<td class="muted col-m-hide">{_esc(a["mat_unit"])}</td>'
             f'<td><button class="btn btn-ghost btn-icon" onclick="updateAssign({a["id"]},{json.dumps(dict(a))})">⚙️</button></td></tr>')
 
@@ -556,9 +640,6 @@ def _project_detail(user, pid):
     if len(members) > 6:
         member_avatars += f'<div class="avatar" style="background:#94a3b8">+{len(members)-6}</div>'
 
-    # ── priority/status display ──
-    plabel = {"low":"Baja","normal":"Normal","high":"Alta","urgent":"Urgente"}.get(p['priority'],p['priority'])
-    pcolor = PRIORITY_COLOR.get(p['priority'],"#64748b")
     desc_html = f'<p style="color:var(--muted);margin-bottom:16px;line-height:1.6">{_esc(p["description"])}</p>' if p.get('description') else ''
 
     # info tab content
@@ -610,14 +691,16 @@ def _project_detail(user, pid):
     h_pct = min(100, int(ph_logged/h_est*100)) if h_est else 0
     hours_html = ""
     if h_est or ph_logged:
-        ph_extra = (f' <span class="muted" style="font-size:.78rem">({ph_logged:.1f} person-h)</span>'
-                    if ph_logged != h_logged else "")
-        hours_html = (f'<div class="kpi" style="margin-bottom:16px">'
-            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
-            f'<div><div class="val" style="font-size:1.2rem">{h_logged}h{ph_extra}'
-            f'{(" <span class=muted style=font-size:.9rem>/ " + str(h_est) + "h</span>") if h_est else ""}</div>'
-            f'<div class="lbl">Horas registradas{" · " + str(ph_logged) + " person-horas" if ph_logged != h_logged else ""}</div></div></div>'
-            f'{"<div class=progress style=margin-top:8px><div class=progress-bar style=width:" + str(h_pct) + "%></div></div>" if h_est else ""}</div>')
+        trend = f"{h_pct}% de {h_est}h estimadas" if h_est else ""
+        ph_label = f"Horas registradas" + (f" · {ph_logged:.1f} person-h" if ph_logged != h_logged else "")
+        hours_html = (
+            '<div class="nd-kpi-strip" style="margin-bottom:16px">'
+            + _kpi_card(f"{h_logged}h", ph_label, "brand" if h_pct < 100 else "warn", "⏱", trend)
+            + (f'<div class="nd-kpi" style="flex:1;min-width:180px"><div class="nd-kpi-lbl" style="margin-bottom:6px">Progreso horas</div>'
+               f'<div class="progress" style="height:8px"><div class="progress-bar" style="width:{h_pct}%"></div></div>'
+               f'<div class="nd-kpi-trend">{h_pct}%</div></div>' if h_est else "")
+            + '</div>'
+        )
 
     # ── build time tab HTML ──
     wl_summary_html = ""
@@ -801,15 +884,15 @@ def _project_detail(user, pid):
             f'</div></div>')
     kit_tab_html = f"""
 <div class="toolbar" style="margin-bottom:12px">
-  <h2>📦 Recomendaciones de material</h2>
+  <h2>🧰 Maletín de obra</h2>
   <button class="btn btn-primary btn-sm" onclick="openKitRecModal()">+ Añadir</button>
 </div>
 <p class="muted" style="font-size:.82rem;margin-bottom:16px;line-height:1.5">
-  Recomendaciones del jefe de proyecto — materiales que el equipo de campo debería llevar.
-  No generan movimiento de almacén, son avisos de preparación.
+  Material que el equipo de campo debería llevar para esta intervención.
+  Sin movimiento de almacén — es una lista de preparación.
 </p>
 <div class="card">
-{kit_rows_html if kit_rows_html else "<p class='muted' style='text-align:center;padding:24px'>Sin recomendaciones todavía — añade la primera.</p>"}
+{kit_rows_html if kit_rows_html else "<p class='muted' style='text-align:center;padding:24px'>Sin items en el maletín — añade el primero.</p>"}
 </div>"""
 
     task_done = len([t for t in tasks if t['status'] == 'done'])
@@ -818,6 +901,18 @@ def _project_detail(user, pid):
     total_hours = sum(wl.get('hours') or 0 for wl in work_logs_all)
     total_hours_fmt = f"{total_hours:.1f}h" if total_hours else "0h"
     safe_proj = {k: v for k, v in p.items() if isinstance(v, (str, int, float, type(None)))}
+    # JS data for Gantt and task deps
+    all_tasks_js = json.dumps([{
+        "id": t["id"], "title": t.get("title",""),
+        "description": t.get("description","") or "",
+        "status": t.get("status","pending"),
+        "priority": t.get("priority","normal"),
+        "due_date": t.get("due_date","") or "",
+        "start_date": t.get("start_date","") or "",
+        "created_at": (t.get("created_at","") or "")[:10],
+    } for t in tasks], ensure_ascii=False)
+    task_dep_opts = "".join(
+        f'<option value="{t["id"]}">{_esc(t["title"][:60])}</option>' for t in tasks)
     content = f"""
 <div style="margin-bottom:8px"><a href="{BP}/projects" class="muted" style="font-size:.85rem">← Proyectos</a></div>
 
@@ -831,16 +926,20 @@ def _project_detail(user, pid):
         {('&nbsp;<span class="chip">#'+_esc(p["reference"])+'</span>') if p.get("reference") else ""}
       </div>
       <div class="proj-hd-meta">
-        {_badge(p["status"])}
+        {_badge2(p["status"])}
         {_pbadge(p["priority"])}
         {'<span class="muted" style="font-size:.8rem">📅 '+_esc((p["due_date"] or "")[:10])+'</span>' if p.get("due_date") else ""}
+        {_sla_badge(p)}
+        {'<span class="chip" style="font-size:.72rem">🔄 '+{"monthly":"Mensual","quarterly":"Trimestral","biannual":"Semestral","annual":"Anual"}.get(p.get("recurrence","none"),"")+'</span>' if p.get("recurrence","none") not in ("none","","None",None) else ""}
       </div>
       {('<div class="avatar-row" style="margin-top:8px">'+member_avatars+'</div>') if member_avatars else ""}
     </div>
     <div class="proj-hd-actions">
       <a href="{BP}/projects/{pid}/report" target="_blank" class="btn btn-ghost btn-sm">🖨 Informe</a>
+      <a href="{BP}/projects/{pid}/parte" target="_blank" class="btn btn-ghost btn-sm">📄 Parte</a>
       <a href="{BP}/projects/{pid}/albaran" target="_blank" class="btn btn-ghost btn-sm">🧾 Albarán</a>
       <button class="btn btn-ghost btn-sm" onclick="openSigModal()">✍️ Firma</button>
+      <button class="btn btn-ghost btn-sm" onclick="showSaveTemplateModal()">💾 Plantilla</button>
       <button class="btn btn-ghost btn-sm" onclick="editProject({_jattr(safe_proj)})">✏️ Editar</button>
     </div>
   </div>
@@ -882,6 +981,7 @@ def _project_detail(user, pid):
     <div class="view-toggle" id="task-view-toggle">
       <button class="active" id="vbtn-kanban" onclick="setTaskView('kanban')">⊞ Kanban</button>
       <button id="vbtn-list" onclick="setTaskView('list')">☰ Lista</button>
+      <button id="vbtn-gantt" onclick="setTaskView('gantt')">📊 Gantt</button>
     </div>
   </div>
   <button class="btn btn-primary btn-sm" onclick="openNewTask()">+ Tarea</button>
@@ -895,16 +995,15 @@ def _project_detail(user, pid):
   <th class="col-m-hide">Prioridad</th><th class="col-m-hide">Vencimiento</th><th></th>
 </tr></thead><tbody>{t_rows or "<tr><td colspan='6' class='muted' style='text-align:center;padding:20px'>Sin tareas</td></tr>"}</tbody></table></div>
 </div>
+<div id="tasks-gantt" style="display:none;padding:0 16px 16px;overflow-x:auto">
+  <div id="gantt-svg-wrap" style="min-width:500px"></div>
+</div>
 </div>
 </div>
 
 <div class="trabajo-side">
-<div class="time-section">
-  <h3 style="margin-bottom:14px;font-size:.95rem;font-weight:700">🕐 Horas registradas</h3>
-  {time_tab_html}
-</div>
 <div class="comment-section">
-  <h3 style="margin-bottom:14px;font-size:.95rem;font-weight:700">💬 Seguimiento ({len(comments)})</h3>
+  <h3 style="margin-bottom:14px;font-size:.95rem;font-weight:700">💬 Seguimiento del proyecto ({len(comments)})</h3>
   {comments_tab_html}
 </div>
 </div>
@@ -955,27 +1054,13 @@ def _project_detail(user, pid):
 <div id="tab-cierre" class="tab-pane">
 
 <div class="card">
-<div class="toolbar"><h2>Diario de obra ({len(logs)})</h2></div>
-{hours_html}
-<div class="card" style="border:1px solid var(--border);margin-top:0">
-  <div class="field"><label>Nueva entrada</label><textarea id="log-body" rows="3" placeholder="¿Qué se hizo hoy? Instalación, incidencias, pendientes..."></textarea></div>
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:0;flex-wrap:wrap">
-    <div style="flex:0 0 120px"><label>Horas trabajadas</label><input type="number" id="log-hours" min="0" max="24" step="0.5" value="0" placeholder="h"></div>
-    <div style="flex:0 0 140px"><label>Nº técnicos presentes</label>
-      <select id="log-techs">
-        <option value="1">1 técnico</option>
-        <option value="2">2 técnicos</option>
-        <option value="3">3 técnicos</option>
-        <option value="4">4 técnicos</option>
-        <option value="5">5 técnicos</option>
-        <option value="6">6 técnicos</option>
-      </select>
-    </div>
-    <div class="muted" id="log-ph-preview" style="font-size:.8rem;margin-top:18px"></div>
-    <button class="btn btn-primary" onclick="addLog()" style="margin-top:18px">Añadir entrada</button>
-  </div>
+<div class="toolbar">
+  <h2>⏱ Registro de trabajo</h2>
+  <span class="muted" style="font-size:.82rem">Registra horas desde la pestaña <strong>Trabajo</strong> →</span>
 </div>
-{"<ul class='timeline'>" + log_items + "</ul>" if log_items else "<p class='muted' style='text-align:center;padding:20px'>Sin entradas en el diario todavía</p>"}
+{hours_html}
+{time_tab_html}
+{f"<h3 style='margin:20px 0 8px;font-size:.9rem;font-weight:700;color:var(--muted)'>📋 Diario de obra ({len(logs)} entradas)</h3><ul class='timeline'>{log_items}</ul>" if log_items else ""}
 </div>
 
 <div class="card">
@@ -1002,7 +1087,7 @@ def _project_detail(user, pid):
 <!-- MODAL kit recomendación -->
 <div class="modal-bg" id="kit-rec-modal">
 <div class="modal" style="max-width:460px">
-  <h2>📦 Añadir recomendación de material</h2>
+  <h2>🧰 Añadir al maletín de obra</h2>
   <div class="form-row single">
     <div><label>Categoría</label>
     <select id="kr-cat">
@@ -1031,7 +1116,7 @@ def _project_detail(user, pid):
   </div>
   <div class="modal-foot">
     <button type="button" class="btn btn-ghost" onclick="closeKitRecModal()">Cancelar</button>
-    <button class="btn btn-primary" onclick="doAddKitRec()">Añadir recomendación</button>
+    <button class="btn btn-primary" onclick="doAddKitRec()">Añadir al maletín</button>
   </div>
 </div></div>
 
@@ -1083,7 +1168,14 @@ def _project_detail(user, pid):
     </select></div>
     <div><label>Estado</label><select id="f-status">
       <option value="active">Activo</option><option value="paused">Pausado</option>
+      <option value="quoted">Presupuestado</option>
+      <option value="pending_approval">Pend. firma</option>
       <option value="completed">Completado</option><option value="cancelled">Cancelado</option>
+    </select></div>
+    <div><label>Recurrencia</label><select id="f-recurrence">
+      <option value="none">Sin recurrencia</option>
+      <option value="monthly">Mensual</option><option value="quarterly">Trimestral</option>
+      <option value="biannual">Semestral</option><option value="annual">Anual</option>
     </select></div>
     <div><label>Prioridad</label><select id="f-priority">
       <option value="low">Baja</option><option value="normal">Normal</option>
@@ -1122,7 +1214,18 @@ def _project_detail(user, pid):
       <option value="high">Alta</option><option value="urgent">Urgente</option>
     </select></div>
   </div>
-  <div class="form-row"><div><label>Fecha límite</label><input type="date" id="t-due"></div></div>
+  <div class="form-row">
+    <div><label>Inicio (Gantt)</label><input type="date" id="t-start"></div>
+    <div><label>Fecha límite</label><input type="date" id="t-due"></div>
+  </div>
+  <div class="form-row single" id="t-deps-row">
+    <div><label>Depende de <span class="muted" style="font-weight:400;font-size:.75rem">(bloqueada por estas tareas)</span></label>
+    <select id="t-deps" multiple style="height:72px;width:100%;font-size:.82rem">
+    {task_dep_opts}
+    </select>
+    <span class="muted" style="font-size:.72rem">Ctrl+clic para selección múltiple</span>
+    </div>
+  </div>
   <div class="modal-foot">
     <button type="button" class="btn btn-ghost" onclick="closeTaskModal()">Cancelar</button>
     <button type="submit" class="btn btn-primary">Guardar</button>
@@ -1140,6 +1243,7 @@ def _project_detail(user, pid):
     <button class="btn btn-primary btn-sm" onclick="addChecklistItem()">+</button>
   </div>
   <div class="modal-foot">
+    <button type="button" class="btn btn-ghost btn-sm" onclick="loadClTemplate()" title="Cargar plantilla según tipo de trabajo">📋 Plantilla</button>
     <button type="button" class="btn btn-ghost" onclick="closeClModal()">Cerrar</button>
   </div>
 </div></div>
@@ -1191,6 +1295,35 @@ def _project_detail(user, pid):
   </div>
 </div></div>
 
+<!-- MODAL comentarios de tarea -->
+<div class="modal-bg" id="tcm-modal">
+<div class="modal" style="max-width:480px">
+  <h2 id="tcm-title">Comentarios</h2>
+  <div id="tcm-list" style="max-height:280px;overflow-y:auto;margin-bottom:12px;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
+  <div style="display:flex;gap:8px;align-items:flex-end">
+    <textarea id="tcm-body" rows="2" placeholder="Escribe un comentario..." style="flex:1;resize:none"></textarea>
+    <button class="btn btn-primary btn-sm" onclick="addTaskComment()">Enviar</button>
+  </div>
+  <div class="modal-foot" style="margin-top:8px">
+    <button type="button" class="btn btn-ghost" onclick="document.getElementById('tcm-modal').classList.remove('open')">Cerrar</button>
+  </div>
+</div></div>
+
+<!-- MODAL guardar como plantilla -->
+<div class="modal-bg" id="tpl-save-modal">
+<div class="modal" style="max-width:420px">
+  <h2>💾 Guardar como plantilla</h2>
+  <p class="muted" style="font-size:.82rem;margin-bottom:12px">Guarda este proyecto y sus tareas como plantilla reutilizable.</p>
+  <div class="form-row single">
+    <div><label>Nombre de la plantilla *</label>
+    <input id="tpl-name" placeholder="Ej: Instalación switch Cisco, Mantenimiento red LAN..."></div>
+  </div>
+  <div class="modal-foot">
+    <button type="button" class="btn btn-ghost" onclick="document.getElementById('tpl-save-modal').classList.remove('open')">Cancelar</button>
+    <button class="btn btn-primary" onclick="doSaveTemplate()">💾 Guardar</button>
+  </div>
+</div></div>
+
 <!-- MODAL firma cliente -->
 <div class="modal-bg" id="sig-modal">
 <div class="modal" style="max-width:500px">
@@ -1210,7 +1343,12 @@ def _project_detail(user, pid):
 
 <script>
 var bp={json.dumps(BP)}, pid={pid};
+var _kitPending={kit_pending_count};
+var _projWorkType={json.dumps(p.get('work_type','proyecto'))};
 var _clTaskId=null;
+var _allTasks={all_tasks_js};
+var _allTasksById={{}};
+_allTasks.forEach(function(t){{_allTasksById[t.id]=t;}});
 
 // ── tabs ──
 function showTab(name,btn){{
@@ -1250,24 +1388,24 @@ function editProject(p){{
   document.getElementById('f-start').value=p.start_date||'';
   document.getElementById('f-due').value=p.due_date||'';
   document.getElementById('f-hours').value=p.estimated_hours||0;
+  document.getElementById('f-recurrence').value=p.recurrence||'none';
   document.getElementById('proj-modal').classList.add('open');
 }}
 function geocodeProjAddr(){{
   var addr=document.getElementById('f-addr').value.trim();
-  if(!addr){{alert('Escribe primero una dirección');return;}}
+  if(!addr){{Toast.show('Escribe primero una dirección','err');return;}}
   fetch(bp+'/api/geocode?q='+encodeURIComponent(addr))
     .then(function(r){{return r.ok?r.json():r.json().then(function(j){{throw new Error(j.error||'No encontrado');}});}})
     .then(function(d){{
       fetch(bp+'/api/projects/{pid}/geocode',{{method:'POST',
         headers:{{'Content-Type':'application/json'}},
         body:JSON.stringify({{lat:d.lat,lng:d.lng}})}})
-        .then(function(r){{if(r.ok)alert('Ubicación guardada ✓');}});
-    }}).catch(function(err){{alert('No se encontró la dirección: '+err.message);}});
+        .then(function(r){{if(r.ok)Toast.show('Ubicación guardada ✓','ok');}});
+    }}).catch(function(err){{Toast.show('No se encontró la dirección: '+err.message,'err');}});
 }}
 function closeProjModal(){{document.getElementById('proj-modal').classList.remove('open');}}
 document.getElementById('proj-modal').onclick=function(e){{if(e.target===this)closeProjModal();}};
-document.getElementById('proj-form').onsubmit=function(e){{
-  e.preventDefault();
+function _doSaveProject(){{
   fetch(bp+'/api/projects/'+pid,{{method:'PUT',headers:{{'Content-Type':'application/json'}},
     body:JSON.stringify({{name:document.getElementById('f-name').value,
       reference:document.getElementById('f-ref').value,
@@ -1276,21 +1414,37 @@ document.getElementById('proj-form').onsubmit=function(e){{
       contact_name:document.getElementById('f-cname').value,contact_phone:document.getElementById('f-cphone').value,
       description:document.getElementById('f-desc').value,status:document.getElementById('f-status').value,
       priority:document.getElementById('f-priority').value,start_date:document.getElementById('f-start').value,
-      due_date:document.getElementById('f-due').value,estimated_hours:parseFloat(document.getElementById('f-hours').value)||0}})
+      due_date:document.getElementById('f-due').value,estimated_hours:parseFloat(document.getElementById('f-hours').value)||0,
+      recurrence:document.getElementById('f-recurrence').value}})
   }}).then(function(r){{if(r.ok)location.reload();}});
+}}
+document.getElementById('proj-form').onsubmit=function(e){{
+  e.preventDefault();
+  var newStatus=document.getElementById('f-status').value;
+  if(newStatus==='completed'&&_kitPending>0){{
+    ConfirmDialog.show('Maletín pendiente',
+      'Hay '+_kitPending+' ítem(s) en el maletín sin confirmar como llevados. ¿Cerrar el proyecto igualmente?')
+      .then(function(ok){{if(ok)_doSaveProject();}});
+    return;
+  }}
+  _doSaveProject();
 }};
 
 // ── task view toggle ──
 function setTaskView(v){{
   document.getElementById('tasks-kanban').style.display=v==='kanban'?'':'none';
   document.getElementById('tasks-list').style.display=v==='list'?'':'none';
+  document.getElementById('tasks-gantt').style.display=v==='gantt'?'':'none';
   document.getElementById('vbtn-kanban').className=v==='kanban'?'active':'';
   document.getElementById('vbtn-list').className=v==='list'?'active':'';
+  document.getElementById('vbtn-gantt').className=v==='gantt'?'active':'';
   localStorage.setItem('nd_task_view_'+pid,v);
+  if(v==='gantt') buildGantt();
 }}
 (function(){{
   var saved=localStorage.getItem('nd_task_view_'+pid);
   if(saved&&saved==='list') setTaskView('list');
+  else if(saved&&saved==='gantt') setTaskView('gantt');
 }})();
 
 // ── kanban drag & drop ──
@@ -1352,7 +1506,9 @@ function openNewTask(){{
   document.getElementById('t-desc').value='';
   document.getElementById('t-status').value=_newTaskStatus||'pending';
   document.getElementById('t-priority').value='normal';
+  document.getElementById('t-start').value='';
   document.getElementById('t-due').value='';
+  Array.from(document.getElementById('t-deps').options).forEach(function(o){{o.selected=false;}});
   _newTaskStatus='pending';
   document.getElementById('task-modal').classList.add('open');
 }}
@@ -1363,7 +1519,17 @@ function editTask(t){{
   document.getElementById('t-desc').value=t.description||'';
   document.getElementById('t-status').value=t.status||'pending';
   document.getElementById('t-priority').value=t.priority||'normal';
+  document.getElementById('t-start').value=t.start_date||'';
   document.getElementById('t-due').value=t.due_date||'';
+  // load deps for this task
+  fetch(bp+'/api/tasks/'+t.id+'/dependencies')
+    .then(function(r){{return r.json();}})
+    .then(function(deps){{
+      var depIds=deps.map(function(d){{return String(d.depends_on);}});
+      Array.from(document.getElementById('t-deps').options).forEach(function(o){{
+        o.selected=depIds.indexOf(o.value)>=0;
+      }});
+    }}).catch(function(){{}});
   document.getElementById('task-modal').classList.add('open');
 }}
 function closeTaskModal(){{document.getElementById('task-modal').classList.remove('open');}}
@@ -1371,12 +1537,25 @@ document.getElementById('task-modal').onclick=function(e){{if(e.target===this)cl
 document.getElementById('task-form').onsubmit=function(e){{
   e.preventDefault();
   var id=document.getElementById('task-id').value;
+  var selDeps=Array.from(document.getElementById('t-deps').selectedOptions).map(function(o){{return parseInt(o.value);}});
   var d={{title:document.getElementById('t-title').value,description:document.getElementById('t-desc').value,
     status:document.getElementById('t-status').value,priority:document.getElementById('t-priority').value,
+    start_date:document.getElementById('t-start').value,
     due_date:document.getElementById('t-due').value}};
   var url=id?bp+'/api/tasks/'+id:bp+'/api/projects/'+pid+'/tasks';
   fetch(url,{{method:id?'PUT':'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
-    .then(function(r){{if(r.ok)location.reload();}});
+    .then(function(r){{
+      if(!r.ok) return;
+      return r.json().then(function(j){{
+        var tid=id||j.id;
+        if(!tid){{location.reload();return;}}
+        // sync dependencies
+        return fetch(bp+'/api/tasks/'+tid+'/dependencies',{{method:'POST',
+          headers:{{'Content-Type':'application/json'}},
+          body:JSON.stringify({{deps:selDeps}})
+        }}).then(function(){{location.reload();}});
+      }});
+    }});
 }};
 function toggleTask(id,status){{
   var next=status==='done'?'pending':'done';
@@ -1385,8 +1564,10 @@ function toggleTask(id,status){{
     .then(function(r){{if(r.ok)location.reload();}});
 }}
 function delTask(id){{
-  if(!confirm('¿Eliminar tarea?')) return;
-  fetch(bp+'/api/tasks/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+  ConfirmDialog.show('¿Eliminar tarea?','')
+    .then(function(ok){{if(!ok)return;
+      fetch(bp+'/api/tasks/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+    }});
 }}
 
 // ── checklist ──
@@ -1441,6 +1622,31 @@ function delCl(id){{
 }}
 function closeClModal(){{document.getElementById('cl-modal').classList.remove('open');}}
 document.getElementById('cl-modal').onclick=function(e){{if(e.target===this)closeClModal();}};
+var _clTemplates={{
+  "instalacion":["Verificar alimentación eléctrica","Rack y cableado organizado","Etiquetado de puertos completado","Configuración de dispositivos aplicada","Prueba de conectividad end-to-end","Documentación entregada al cliente"],
+  "averia":["Diagnóstico inicial documentado","Identificar componente fallido","Reemplazo o reconfiguración aplicada","Verificar servicio restaurado","Causa raíz documentada","Registro en sistema actualizado"],
+  "mantenimiento":["Revisión visual de LEDs e interfaces","Limpieza de ventiladores y filtros","Revisión de logs de errores","Backup de configuración realizado","Test de failover si aplica","Informe de estado entregado"],
+  "inspeccion":["Inventario físico de equipos","Estado visual del cableado","Comprobación de etiquetado","Test de velocidad y latencia","Revisión de licencias vigentes","Informe fotográfico completado"],
+  "proyecto":["Kick-off con cliente realizado","Materiales disponibles confirmados","Instalación completada","Pruebas de aceptación superadas","Formación al cliente impartida","Documentación as-built entregada"]
+}};
+function loadClTemplate(){{
+  var tmpl=_clTemplates[_projWorkType]||_clTemplates['proyecto'];
+  var hasItems=document.getElementById('cl-list').querySelectorAll('li:not(.muted)').length>0;
+  var doLoad=function(){{
+    var reqs=tmpl.map(function(label){{
+      return fetch(bp+'/api/tasks/'+_clTaskId+'/checklist',{{method:'POST',
+        headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{label:label}})}});
+    }});
+    Promise.all(reqs).then(function(){{
+      fetch(bp+'/api/tasks/'+_clTaskId+'/checklist').then(function(r){{return r.json();}}).then(renderChecklist);
+      Toast.show('Plantilla cargada — '+tmpl.length+' pasos','ok');
+    }});
+  }};
+  if(hasItems){{
+    ConfirmDialog.show('¿Añadir plantilla?','Se añadirán '+tmpl.length+' pasos al checklist existente.')
+      .then(function(ok){{if(ok)doLoad();}});
+  }}else{{doLoad();}}
+}}
 
 // ── log ──
 function updateLogPreview(){{
@@ -1495,9 +1701,22 @@ document.getElementById('assign-modal').onclick=function(e){{if(e.target===this)
 function updateStockInfo(){{
   var sel=document.getElementById('a-mat');
   var opt=sel.options[sel.selectedIndex];
-  var s=opt?opt.getAttribute('data-stock'):'?';
-  document.getElementById('a-stock-info').textContent='Stock en almacén: '+s+' ud';
+  var s=opt?parseInt(opt.getAttribute('data-stock')||'0'):0;
+  var sm=opt?parseInt(opt.getAttribute('data-stockmin')||'0'):0;
+  var req=parseInt(document.getElementById('a-req').value)||0;
+  var el=document.getElementById('a-stock-info');
+  if(req>s){{
+    el.textContent='⚠️ Stock insuficiente: '+s+' ud en almacén (solicitado: '+req+')';
+    el.style.color='var(--s-err)';
+  }}else if(sm>0&&s<=sm){{
+    el.textContent='⚠️ Stock bajo ('+s+'/'+sm+' mínimo). Confirma antes de asignar.';
+    el.style.color='var(--s-warn)';
+  }}else{{
+    el.textContent='Stock en almacén: '+s+' ud';
+    el.style.color='var(--muted)';
+  }}
 }}
+document.getElementById('a-req').oninput=updateStockInfo;
 document.getElementById('a-mat').onchange=updateStockInfo;
 document.getElementById('assign-form').onsubmit=function(e){{
   e.preventDefault();
@@ -1510,7 +1729,7 @@ document.getElementById('assign-form').onsubmit=function(e){{
     status:document.getElementById('a-status').value,notes:document.getElementById('a-notes').value}};
   var url=id?bp+'/api/assignments/'+id:bp+'/api/projects/'+pid+'/assignments';
   fetch(url,{{method:id?'PUT':'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
-    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{Toast.show(j.error||'Error','err');}});}});
 }};
 updateStockInfo();
 
@@ -1525,12 +1744,13 @@ function doAddMember(){{
     notes:document.getElementById('mb-notes').value}};
   fetch(bp+'/api/projects/'+pid+'/members',{{method:'POST',
     headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
-    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{Toast.show(j.error||'Error','err');}});}});
 }}
 function removeMember(id){{
-  if(!confirm('¿Quitar del equipo?')) return;
-  fetch(bp+'/api/project_members/'+id,{{method:'DELETE'}})
-    .then(function(r){{if(r.ok)location.reload();}});
+  ConfirmDialog.show('¿Quitar del equipo?','')
+    .then(function(ok){{if(!ok)return;
+      fetch(bp+'/api/project_members/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+    }});
 }}
 
 // ── files ──
@@ -1551,9 +1771,10 @@ function handleFiles(files){{
   }});
 }}
 function delFile(id){{
-  if(!confirm('¿Eliminar este archivo?')) return;
-  fetch(bp+'/api/project_files/'+id,{{method:'DELETE'}})
-    .then(function(r){{if(r.ok)location.reload();}});
+  ConfirmDialog.show('¿Eliminar este archivo?','')
+    .then(function(ok){{if(!ok)return;
+      fetch(bp+'/api/project_files/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+    }});
 }}
 
 // ── work logs ──
@@ -1562,18 +1783,19 @@ function addWorkLog(){{
   var date=document.getElementById('wl-date').value;
   var hours=parseFloat(document.getElementById('wl-hours').value);
   var desc=document.getElementById('wl-desc').value;
-  if(!date||!hours||hours<=0){{alert('Fecha y horas son obligatorias');return;}}
+  if(!date||!hours||hours<=0){{Toast.show('Fecha y horas son obligatorias','err');return;}}
   var d={{project_id:pid,log_date:date,hours:hours,description:desc}};
   if(uid_el) d.user_id=uid_el.value;
   fetch(bp+'/api/work_logs',{{method:'POST',
     headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
     .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}});}})
-    .then(function(res){{if(!res.ok){{alert(res.j.error||'Error');return;}}location.reload();}});
+    .then(function(res){{if(!res.ok){{Toast.show(res.j.error||'Error','err');return;}}location.reload();}});
 }}
 function delWorkLog(id){{
-  if(!confirm('¿Eliminar este registro de horas?')) return;
-  fetch(bp+'/api/work_logs/'+id,{{method:'DELETE'}})
-    .then(function(r){{if(r.ok)location.reload();}});
+  ConfirmDialog.show('¿Eliminar este registro de horas?','')
+    .then(function(ok){{if(!ok)return;
+      fetch(bp+'/api/work_logs/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+    }});
 }}
 
 // ── task photos ──
@@ -1608,12 +1830,13 @@ function uploadTaskPhotos(files){{
   Array.from(files).forEach(function(f){{fd.append('photo',f);}});
   fetch(bp+'/api/tasks/'+_photoTaskId+'/photos',{{method:'POST',body:fd}})
     .then(function(r){{if(r.ok){{loadTaskPhotos(_photoTaskId);location.reload();}}
-      else r.json().then(function(j){{alert(j.error||'Error');}});}});
+      else r.json().then(function(j){{Toast.show(j.error||'Error','err');}});}});
 }}
 function delTaskPhoto(id){{
-  if(!confirm('¿Eliminar esta foto?')) return;
-  fetch(bp+'/api/task_photos/'+id,{{method:'DELETE'}})
-    .then(function(r){{if(r.ok)loadTaskPhotos(_photoTaskId);}});
+  ConfirmDialog.show('¿Eliminar esta foto?','')
+    .then(function(ok){{if(!ok)return;
+      fetch(bp+'/api/task_photos/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)loadTaskPhotos(_photoTaskId);}});
+    }});
 }}
 
 // ── signature ──
@@ -1643,49 +1866,51 @@ function clearSignature(){{
 function closeSigModal(){{document.getElementById('sig-modal').classList.remove('open');}}
 document.getElementById('sig-modal').onclick=function(e){{if(e.target===this)closeSigModal();}};
 function saveSignature(){{
-  if(!_sigHasMark){{alert('Por favor dibuja la firma antes de guardar');return;}}
+  if(!_sigHasMark){{Toast.show('Por favor dibuja la firma antes de guardar','err');return;}}
   var dataUrl=document.getElementById('sig-canvas').toDataURL('image/png');
   fetch(bp+'/api/projects/'+pid+'/signature',{{method:'POST',
     headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{image:dataUrl}})}})
     .then(function(r){{return r.ok?r.json():r.json().then(function(j){{throw new Error(j.error||'Error');}});}})
-    .then(function(){{closeSigModal();alert('Firma guardada correctamente');location.reload();}})
-    .catch(function(err){{alert(err.message);}});
+    .then(function(){{closeSigModal();Toast.show('Firma guardada correctamente','ok');location.reload();}})
+    .catch(function(err){{Toast.show(err.message,'err');}});
 }}
 
 // ── extras ──
 function addExtra(){{
   var desc=document.getElementById('ex-desc').value.trim();
-  if(!desc){{alert('Escribe una descripción');return;}}
+  if(!desc){{Toast.show('Escribe una descripción','err');return;}}
   fetch(bp+'/api/projects/'+pid+'/extras',{{method:'POST',
     headers:{{'Content-Type':'application/json'}},
     body:JSON.stringify({{description:desc,
       quantity:parseFloat(document.getElementById('ex-qty').value)||1,
       unit:document.getElementById('ex-unit').value||'ud',
       notes:document.getElementById('ex-notes').value}})}})
-    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{Toast.show(j.error||'Error','err');}});}});
 }}
 function delExtra(id){{
-  if(!confirm('¿Eliminar este extra?')) return;
-  fetch(bp+'/api/wo_extras/'+id,{{method:'DELETE'}})
-    .then(function(r){{if(r.ok)location.reload();}});
+  ConfirmDialog.show('¿Eliminar este extra?','')
+    .then(function(ok){{if(!ok)return;
+      fetch(bp+'/api/wo_extras/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+    }});
 }}
 
 // ── equipment ──
 function addEquipment(){{
   var model=document.getElementById('eq-model').value.trim();
-  if(!model){{alert('Escribe el modelo del equipo');return;}}
+  if(!model){{Toast.show('Escribe el modelo del equipo','err');return;}}
   fetch(bp+'/api/projects/'+pid+'/equipment',{{method:'POST',
     headers:{{'Content-Type':'application/json'}},
     body:JSON.stringify({{brand:document.getElementById('eq-brand').value,
       model:model,serial_number:document.getElementById('eq-serial').value,
       quantity:parseInt(document.getElementById('eq-qty').value)||1,
       notes:document.getElementById('eq-notes').value}})}})
-    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{Toast.show(j.error||'Error','err');}});}});
 }}
 function delEquipment(id){{
-  if(!confirm('¿Eliminar este equipo?')) return;
-  fetch(bp+'/api/equipment_items/'+id,{{method:'DELETE'}})
-    .then(function(r){{if(r.ok)location.reload();}});
+  ConfirmDialog.show('¿Eliminar este equipo?','')
+    .then(function(ok){{if(!ok)return;
+      fetch(bp+'/api/equipment_items/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+    }});
 }}
 
 // ── comments ──
@@ -1697,9 +1922,10 @@ function addComment(){{
     .then(function(r){{if(r.ok)location.reload();}});
 }}
 function delComment(id){{
-  if(!confirm('¿Eliminar comentario?')) return;
-  fetch(bp+'/api/wo_comments/'+id,{{method:'DELETE'}})
-    .then(function(r){{if(r.ok)location.reload();}});
+  ConfirmDialog.show('¿Eliminar comentario?','')
+    .then(function(ok){{if(!ok)return;
+      fetch(bp+'/api/wo_comments/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+    }});
 }}
 
 // ── kit recommendations ──
@@ -1714,7 +1940,7 @@ function closeKitRecModal(){{document.getElementById('kit-rec-modal').classList.
 document.getElementById('kit-rec-modal').onclick=function(e){{if(e.target===this)closeKitRecModal();}};
 function doAddKitRec(){{
   var name=document.getElementById('kr-name').value.trim();
-  if(!name){{alert('Escribe una descripción');return;}}
+  if(!name){{Toast.show('Escribe una descripción','err');return;}}
   fetch(bp+'/api/projects/'+pid+'/kit',{{method:'POST',
     headers:{{'Content-Type':'application/json'}},
     body:JSON.stringify({{
@@ -1724,7 +1950,7 @@ function doAddKitRec(){{
       unit:document.getElementById('kr-unit').value||'uds',
       notes:document.getElementById('kr-notes').value
     }})}})
-    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{alert(j.error||'Error');}});}});
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{Toast.show(j.error||'Error','err');}});}});
 }}
 function kitSetStatus(id,status){{
   fetch(bp+'/api/project_kit/'+id,{{method:'PATCH',
@@ -1733,12 +1959,152 @@ function kitSetStatus(id,status){{
     .then(function(r){{if(r.ok)location.reload();}});
 }}
 function delKitRec(id){{
-  if(!confirm('¿Eliminar esta recomendación?')) return;
-  fetch(bp+'/api/project_kit/'+id,{{method:'DELETE'}})
-    .then(function(r){{if(r.ok)location.reload();}});
+  ConfirmDialog.show('¿Eliminar esta recomendación?','')
+    .then(function(ok){{if(!ok)return;
+      fetch(bp+'/api/project_kit/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+    }});
+}}
+
+// ── Task comments ──
+var _tcmTaskId=null;
+function openTaskComments(tid,title){{
+  _tcmTaskId=tid;
+  document.getElementById('tcm-title').textContent='💬 '+title;
+  document.getElementById('tcm-body').value='';
+  document.getElementById('tcm-list').innerHTML='<span class="muted">Cargando…</span>';
+  document.getElementById('tcm-modal').classList.add('open');
+  _loadTaskComments(tid);
+}}
+function _loadTaskComments(tid){{
+  fetch(bp+'/api/tasks/'+tid+'/comments')
+    .then(function(r){{return r.json();}}).then(_renderTaskComments);
+}}
+function _renderTaskComments(items){{
+  var el=document.getElementById('tcm-list');
+  if(!items.length){{
+    el.innerHTML='<p class="muted" style="text-align:center;padding:16px;margin:0">Sin comentarios todavía.</p>';
+    return;
+  }}
+  el.innerHTML=items.map(function(c){{
+    var body=(c.body||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    var ts=c.created_at?c.created_at.slice(0,16):'';
+    return '<div style="padding:8px 0;border-bottom:1px solid var(--border)">'
+      +'<div style="font-size:.75rem;color:var(--muted);margin-bottom:2px">'
+      +(c.author||'')+'&nbsp;·&nbsp;'+ts
+      +'<button onclick="delTaskComment('+c.id+')" style="background:none;border:none;color:var(--muted);cursor:pointer;float:right;font-size:.8rem">✕</button>'
+      +'</div>'
+      +'<div style="font-size:.875rem">'+body+'</div>'
+      +'</div>';
+  }}).join('');
+}}
+function addTaskComment(){{
+  var body=document.getElementById('tcm-body').value.trim();
+  if(!body) return;
+  fetch(bp+'/api/tasks/'+_tcmTaskId+'/comments',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{body:body}})}})
+    .then(function(r){{if(r.ok){{
+      document.getElementById('tcm-body').value='';
+      _loadTaskComments(_tcmTaskId);
+    }}}});
+}}
+function delTaskComment(id){{
+  fetch(bp+'/api/task_comments/'+id,{{method:'DELETE'}})
+    .then(function(r){{if(r.ok&&_tcmTaskId) _loadTaskComments(_tcmTaskId);}});
+}}
+
+// ── Gantt ──
+function _svgEsc(s){{return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}}
+function buildGantt(){{
+  var wrap=document.getElementById('gantt-svg-wrap');
+  if(!wrap) return;
+  var tasks=_allTasks.filter(function(t){{return t.due_date||t.start_date;}});
+  if(!tasks.length){{
+    wrap.innerHTML='<p class="muted" style="text-align:center;padding:32px">Sin tareas con fechas — edita las tareas y añade inicio o fecha límite.</p>';
+    return;
+  }}
+  var dates=[];
+  tasks.forEach(function(t){{
+    if(t.start_date) dates.push(new Date(t.start_date).getTime());
+    if(t.due_date) dates.push(new Date(t.due_date).getTime());
+    if(t.created_at) dates.push(new Date(t.created_at).getTime());
+  }});
+  var minD=new Date(Math.min.apply(null,dates));
+  var maxD=new Date(Math.max.apply(null,dates));
+  minD.setDate(minD.getDate()-2); maxD.setDate(maxD.getDate()+2);
+  var totalMs=maxD-minD; var totalDays=Math.max(1,totalMs/(1000*60*60*24));
+  var ROW_H=36,LABEL_W=150,BAR_W=Math.max(500,Math.ceil(totalDays*22));
+  var SVG_W=LABEL_W+BAR_W,SVG_H=tasks.length*ROW_H+32;
+  var SC={{done:'#64748b',blocked:'#dc2626',in_progress:'#1558c2',pending:'#94a3b8',active:'#15803d'}};
+  var today=new Date().toISOString().slice(0,10);
+  function dayX(ds){{
+    var d=new Date(ds); return LABEL_W+(d-minD)/totalMs*BAR_W;
+  }}
+  // header: week marks
+  var hdr='';
+  var cur=new Date(minD);
+  while(cur<=maxD){{
+    var x=dayX(cur.toISOString().slice(0,10));
+    var lbl=cur.toLocaleDateString('es-ES',{{day:'2-digit',month:'short'}});
+    hdr+='<text x="'+x+'" y="18" font-size="9" fill="#94a3b8" text-anchor="middle">'+lbl+'</text>';
+    hdr+='<line x1="'+x+'" y1="20" x2="'+x+'" y2="'+SVG_H+'" stroke="var(--border)" stroke-width="0.5"/>';
+    cur.setDate(cur.getDate()+7);
+  }}
+  // rows
+  var rows='';
+  tasks.forEach(function(t,i){{
+    var y=32+i*ROW_H;
+    var color=SC[t.status]||'#94a3b8';
+    var startDs=t.start_date||t.created_at||today;
+    var endDs=t.due_date||(new Date(new Date(startDs).getTime()+86400000)).toISOString().slice(0,10);
+    var x0=dayX(startDs),x1=dayX(endDs);
+    var barW=Math.max(6,x1-x0);
+    var overdue=t.due_date&&t.due_date<today&&t.status!=='done';
+    var barC=overdue?'#dc2626':color;
+    var lbl=t.title.length>22?t.title.slice(0,22)+'…':t.title;
+    if(i%2===0) rows+='<rect x="0" y="'+y+'" width="'+SVG_W+'" height="'+ROW_H+'" fill="rgba(0,0,0,.03)"/>';
+    rows+='<g onclick="editTask(_allTasksById['+t.id+'])" style="cursor:pointer">'
+      +'<text x="'+(LABEL_W-6)+'" y="'+(y+ROW_H/2+4)+'" text-anchor="end" font-size="11" fill="var(--text)">'+_svgEsc(lbl)+'</text>'
+      +'<rect x="'+x0+'" y="'+(y+6)+'" width="'+barW+'" height="'+(ROW_H-14)+'" rx="4" fill="'+barC+'" opacity=".85"/>';
+    if(barW>30&&t.due_date){{
+      var dStr=t.due_date.slice(5);
+      rows+='<text x="'+(x0+barW/2)+'" y="'+(y+ROW_H/2+4)+'" text-anchor="middle" font-size="9" fill="#fff">'+dStr+'</text>';
+    }}
+    rows+='</g>';
+  }});
+  // today line
+  var todayX=dayX(today);
+  var todayLine='';
+  if(todayX>=LABEL_W&&todayX<=SVG_W){{
+    todayLine='<line x1="'+todayX+'" y1="20" x2="'+todayX+'" y2="'+SVG_H+'" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="5,3" opacity=".7"/>'
+      +'<text x="'+todayX+'" y="16" text-anchor="middle" font-size="9" fill="#dc2626" font-weight="bold">Hoy</text>';
+  }}
+  wrap.innerHTML='<svg width="'+SVG_W+'" height="'+SVG_H+'" style="display:block;font-family:inherit;max-width:100%">'
+    +hdr+rows+todayLine+'</svg>';
+}}
+
+// ── Plantillas ──
+function showSaveTemplateModal(){{
+  document.getElementById('tpl-name').value='{_esc(p.get("name",""))}';
+  document.getElementById('tpl-save-modal').classList.add('open');
+}}
+function doSaveTemplate(){{
+  var name=document.getElementById('tpl-name').value.trim();
+  if(!name){{Toast.show('Escribe un nombre para la plantilla','err');return;}}
+  var tasksForTpl=_allTasks.map(function(t){{
+    return {{title:t.title,description:t.description,priority:t.priority,status:'pending'}};
+  }});
+  fetch(bp+'/api/templates',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{name:name,description:'',work_type:_projWorkType,
+      estimated_hours:{p.get('estimated_hours') or 0},tasks_json:JSON.stringify(tasksForTpl)}})}})
+    .then(function(r){{
+      if(r.ok){{
+        document.getElementById('tpl-save-modal').classList.remove('open');
+        Toast.show('Plantilla guardada: '+name,'ok');
+      }} else r.json().then(function(j){{Toast.show(j.error||'Error','err');}});
+    }});
 }}
 </script>"""
-    return _shell("projects", user, content)
+    return _shell("projects", user, content, title=_esc(p["name"]))
 
 
 # ── inventory ─────────────────────────────────────────────────────────────────
@@ -1746,7 +2112,7 @@ function delKitRec(id){{
 from web.pages.inventory import _inventory_page
 from web.pages.kit import _kit_page
 from web.pages.users import _users_page
-from web.pages.reports import _project_report, _project_report_md, _project_albaran
+from web.pages.reports import _project_report, _project_report_md, _project_albaran, _project_parte, _profitability_page
 from web.pages.calendar import _calendar_page, _calendar_week, _calendar_day
 from web.pages.map import _map_page
 from web.pages.settings import _settings_page
@@ -1870,7 +2236,36 @@ class Handler(BaseHTTPRequestHandler):
             })
             self._send(200, manifest, "application/manifest+json"); return
         if rel == "/sw.js":
-            sw = """self.addEventListener('fetch',function(e){});"""
+            sw = f"""var CACHE='nd-v2-{BP or "root"}';
+var ASSETS=['{BP}/assets/styles/app.css'];
+self.addEventListener('install',function(e){{
+  e.waitUntil(caches.open(CACHE).then(function(c){{return c.addAll(ASSETS);}}));
+  self.skipWaiting();
+}});
+self.addEventListener('activate',function(e){{
+  e.waitUntil(caches.keys().then(function(keys){{
+    return Promise.all(keys.filter(function(k){{return k!==CACHE;}}).map(function(k){{return caches.delete(k);}}));
+  }}));
+  self.clients.claim();
+}});
+self.addEventListener('fetch',function(e){{
+  var url=e.request.url;
+  if(url.includes('/assets/')){{
+    e.respondWith(caches.match(e.request).then(function(r){{return r||fetch(e.request);}}));
+    return;
+  }}
+  if(e.request.method==='GET'&&(url.includes('/field')||url.includes('/api/tasks'))){{
+    e.respondWith(
+      fetch(e.request).then(function(r){{
+        if(r.ok){{var rc=r.clone();caches.open(CACHE).then(function(c){{c.put(e.request,rc);}});}}
+        return r;
+      }}).catch(function(){{return caches.match(e.request)||new Response('Sin conexión',{{status:503}});}}));
+    return;
+  }}
+  e.respondWith(fetch(e.request).catch(function(){{
+    return caches.match(e.request)||new Response('Sin conexión',{{status:503}});
+  }}));
+}});"""
             self._send(200, sw, "application/javascript"); return
 
         sess = _get_sess(self)
@@ -1879,10 +2274,27 @@ class Handler(BaseHTTPRequestHandler):
         if rel in ("/", "/dashboard"):
             self._send(200, _dashboard(sess)); return
         if rel == "/projects":
-            self._send(200, _projects_page(sess, qs.get("status",[""])[0], qs.get("view",["cards"])[0], qs.get("new",[""])[0], qs.get("tech",[""])[0], qs.get("wtype",[""])[0])); return
+            self._send(200, _projects_page(sess, qs.get("status",[""])[0], qs.get("view",["cards"])[0], qs.get("new",[""])[0], qs.get("tech",[""])[0], qs.get("wtype",[""])[0], qs.get("dfrom",[""])[0], qs.get("dto",[""])[0])); return
         m = re.match(r"^/projects/(\d+)$", rel)
         if m:
             html = _project_detail(sess, int(m.group(1)))
+            self._send(200 if html else 404, html or "Not found"); return
+        if rel == "/field":
+            self._send(200, _field_page(sess)); return
+        if rel == "/clients":
+            self._send(200, _clients_page(sess)); return
+        m = re.match(r"^/clients/(.+)$", rel)
+        if m:
+            import urllib.parse
+            cname = urllib.parse.unquote_plus(m.group(1))
+            html = _client_detail(sess, cname)
+            self._send(200 if html else 404, html or "Not found"); return
+        if rel == "/profitability":
+            html = _profitability_page(sess)
+            self._send(200 if html else 403, html or "Forbidden"); return
+        m = re.match(r"^/projects/(\d+)/parte$", rel)
+        if m:
+            html = _project_parte(sess, int(m.group(1)))
             self._send(200 if html else 404, html or "Not found"); return
         if rel == "/inventory":
             self._send(200, _inventory_page(sess)); return
@@ -2115,6 +2527,79 @@ class Handler(BaseHTTPRequestHandler):
                 results.append({"type":"material","id":mat["id"],"title":mat["name"],"sub":mat["code"]})
             self._json(200, results); return
 
+        m = re.match(r"^/api/users/(\d+)/certifications$", rel)
+        if m:
+            uid = int(m.group(1))
+            certs = rs(q("SELECT * FROM user_certifications WHERE user_id=? ORDER BY cert_name", (uid,)))
+            self._json(200, certs); return
+
+        m = re.match(r"^/api/users/(\d+)/availability$", rel)
+        if m:
+            uid = int(m.group(1))
+            if sess.get("role") != "admin" and uid != sess["id"]:
+                self._json(403, {"error":"Forbidden"}); return
+            rows = rs(q("""SELECT * FROM tech_availability
+                WHERE user_id=? AND status IN ('vacation','day_off','sick')
+                ORDER BY avail_date""", (uid,)))
+            self._json(200, rows); return
+
+        m = re.match(r"^/api/tasks/(\d+)/comments$", rel)
+        if m:
+            tid = int(m.group(1))
+            rows = rs(q("""SELECT tc.*,u.display_name author FROM task_comments tc
+                JOIN users u ON u.id=tc.user_id WHERE tc.task_id=? ORDER BY tc.created_at ASC""", (tid,)))
+            self._json(200, rows); return
+
+        m = re.match(r"^/api/tasks/(\d+)/dependencies$", rel)
+        if m:
+            tid = int(m.group(1))
+            rows = rs(q("""SELECT td.*,t.title dep_title FROM task_dependencies td
+                JOIN tasks t ON t.id=td.depends_on WHERE td.task_id=? ORDER BY td.id""", (tid,)))
+            self._json(200, rows); return
+
+        if rel == "/api/templates":
+            tmpls = rs(q("SELECT id,name,description,work_type,estimated_hours,created_at FROM project_templates ORDER BY created_at DESC"))
+            self._json(200, tmpls); return
+
+        m = re.match(r"^/api/templates/(\d+)$", rel)
+        if m:
+            tid = int(m.group(1))
+            tpl = r2d(q1("SELECT * FROM project_templates WHERE id=?", (tid,)))
+            if not tpl: self._json(404, {"error":"Not found"}); return
+            self._json(200, tpl); return
+
+        if rel == "/api/export/projects.csv":
+            import io, csv
+            projects_all = rs(q("""SELECT p.id,p.name,p.client,p.work_type,p.status,p.priority,
+                p.reference,p.start_date,p.due_date,p.estimated_hours,p.address,
+                u.display_name tech,p.created_at,p.updated_at
+                FROM projects p LEFT JOIN users u ON u.id=p.assigned_to
+                ORDER BY p.created_at DESC"""))
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(["ID","Nombre","Cliente","Tipo","Estado","Prioridad","Referencia",
+                        "Inicio","Límite","Horas est.","Dirección","Técnico","Creado","Actualizado"])
+            for pr in projects_all:
+                w.writerow([pr["id"],pr["name"],pr["client"],pr.get("work_type",""),
+                            pr["status"],pr["priority"],pr.get("reference",""),
+                            pr.get("start_date",""),pr.get("due_date",""),
+                            pr.get("estimated_hours",""),pr.get("address",""),
+                            pr.get("tech",""),pr.get("created_at","")[:10],pr.get("updated_at","")[:10]])
+            body = buf.getvalue().encode("utf-8-sig")
+            self.send_response(200)
+            self.send_header("Content-Type","text/csv; charset=utf-8")
+            self.send_header("Content-Disposition",'attachment; filename="proyectos-nuvodesk.csv"')
+            self.send_header("Content-Length",str(len(body)))
+            self.end_headers(); self.wfile.write(body); return
+
+        if rel == "/api/tech_inventory":
+            rows = rs(q("""SELECT ti.*,u.display_name uname,m.name mat_name,m.code mat_code,m.unit mat_unit
+                FROM tech_inventory ti
+                JOIN users u ON u.id=ti.user_id
+                JOIN materials m ON m.id=ti.material_id
+                WHERE ti.qty>0 ORDER BY u.display_name,m.name"""))
+            self._json(200, rows); return
+
         m = re.match(r"^/projects/(\d+)/report$", rel)
         if m:
             html = _project_report(sess, int(m.group(1)))
@@ -2278,16 +2763,54 @@ class Handler(BaseHTTPRequestHandler):
                  int(act_id) if act_id else None, sess["id"]))
             self._json(201, {"id": wid}); return
 
-        # tech availability
+        # tech availability — batch (date range)
+        if rel == "/api/tech_availability/batch":
+            uid        = int(data.get("user_id") or 0)
+            date_from  = (data.get("date_from","") or "").strip()
+            date_to    = (data.get("date_to","") or "").strip()
+            status     = (data.get("status","vacation") or "vacation").strip()
+            if not uid or not date_from or not date_to:
+                self._json(400, {"error":"user_id, date_from y date_to requeridos"}); return
+            _vac_ok = ("vacation","day_off","sick")
+            _adm_ok = ("available","remote","traveling","off") + _vac_ok
+            allowed = _adm_ok if sess.get("role") == "admin" else _vac_ok
+            if status not in allowed:
+                self._json(400, {"error":"Estado inválido"}); return
+            if sess.get("role") != "admin" and uid != sess["id"]:
+                self._json(403, {"error":"Solo puedes gestionar tus propias ausencias"}); return
+            try:
+                d_from = _date.fromisoformat(date_from)
+                d_to   = _date.fromisoformat(date_to)
+            except ValueError:
+                self._json(400, {"error":"Fechas inválidas"}); return
+            if d_to < d_from: self._json(400, {"error":"date_to debe ser >= date_from"}); return
+            notes  = (data.get("notes","") or "").strip()
+            cur = d_from
+            count = 0
+            while cur <= d_to:
+                run("""INSERT INTO tech_availability (user_id,avail_date,status,notes)
+                    VALUES(?,?,?,?)
+                    ON CONFLICT(user_id,avail_date) DO UPDATE
+                    SET status=excluded.status, notes=excluded.notes""",
+                    (uid, str(cur), status, notes))
+                cur += timedelta(days=1)
+                count += 1
+            self._json(200, {"ok": True, "days": count}); return
+
+        # tech availability — single day
         if rel == "/api/tech_availability":
-            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
             uid        = int(data.get("user_id") or 0)
             avail_date = (data.get("avail_date","") or "").strip()
             status     = data.get("status","available") or "available"
             if not uid or not avail_date:
                 self._json(400, {"error":"Usuario y fecha requeridos"}); return
-            if status not in ("available","remote","traveling","off"):
+            _vac_ok2 = ("vacation","day_off","sick")
+            _adm_ok2 = ("available","remote","traveling","off") + _vac_ok2
+            allowed2 = _adm_ok2 if sess.get("role") == "admin" else _vac_ok2
+            if status not in allowed2:
                 self._json(400, {"error":"Estado inválido"}); return
+            if sess.get("role") != "admin" and uid != sess["id"]:
+                self._json(403, {"error":"Forbidden"}); return
             run("""INSERT INTO tech_availability (user_id,avail_date,status,notes)
                 VALUES(?,?,?,?)
                 ON CONFLICT(user_id,avail_date) DO UPDATE
@@ -2350,6 +2873,17 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True}); return
 
         # projects
+        m = re.match(r"^/api/users/(\d+)/certifications$", rel)
+        if m:
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            uid = int(m.group(1))
+            cert = (data.get("cert_name","") or "").strip()
+            if not cert: self._json(400, {"error":"Nombre de certificación requerido"}); return
+            cid = run("INSERT INTO user_certifications (user_id,cert_name,cert_code,issued_date,expires_date,notes) VALUES(?,?,?,?,?,?)",
+                (uid, cert, data.get("cert_code",""), data.get("issued_date",""),
+                 data.get("expires_date",""), data.get("notes","")))
+            self._json(201, {"id": cid, "ok": True}); return
+
         if rel == "/api/projects":
             n = (data.get("name","") or "").strip()
             c = (data.get("client","") or "").strip()
@@ -2490,7 +3024,75 @@ class Handler(BaseHTTPRequestHandler):
                  data.get("notes",""), "pending"))
             self._json(201, {"id":kid}); return
 
-        # comments
+        # task comments
+        m = re.match(r"^/api/tasks/(\d+)/comments$", rel)
+        if m:
+            tid = int(m.group(1))
+            body = (data.get("body","") or "").strip()
+            if not body: self._json(400, {"error":"Texto requerido"}); return
+            task_r = r2d(q1("SELECT project_id FROM tasks WHERE id=?", (tid,)))
+            if not task_r: self._json(404, {"error":"Tarea no encontrada"}); return
+            cid = run("INSERT INTO task_comments (task_id,project_id,user_id,body) VALUES(?,?,?,?)",
+                (tid, task_r["project_id"], sess["id"], body))
+            self._json(201, {"id":cid}); return
+
+        # task dependencies (replace all deps for this task)
+        m = re.match(r"^/api/tasks/(\d+)/dependencies$", rel)
+        if m:
+            tid = int(m.group(1))
+            task_r = r2d(q1("SELECT project_id FROM tasks WHERE id=?", (tid,)))
+            if not task_r: self._json(404, {"error":"Tarea no encontrada"}); return
+            new_deps = [int(d) for d in (data.get("deps") or []) if d != tid]
+            run("DELETE FROM task_dependencies WHERE task_id=?", (tid,))
+            for dep_id in new_deps:
+                try:
+                    run("INSERT OR IGNORE INTO task_dependencies (task_id,depends_on) VALUES(?,?)", (tid, dep_id))
+                except Exception:
+                    pass
+            self._json(200, {"ok":True}); return
+
+        # templates
+        if rel == "/api/templates":
+            if sess.get("role") not in ("admin","backoffice"):
+                self._json(403, {"error":"Forbidden"}); return
+            tname = (data.get("name","") or "").strip()
+            if not tname: self._json(400, {"error":"Nombre requerido"}); return
+            tid = run("""INSERT INTO project_templates
+                (name,description,work_type,estimated_hours,tasks_json,created_by)
+                VALUES(?,?,?,?,?,?)""",
+                (tname, data.get("description",""), data.get("work_type","proyecto"),
+                 float(data.get("estimated_hours") or 0),
+                 data.get("tasks_json","[]"), sess["id"]))
+            self._json(201, {"id":tid}); return
+
+        m = re.match(r"^/api/templates/(\d+)/apply$", rel)
+        if m:
+            tmpl_id = int(m.group(1))
+            tpl = r2d(q1("SELECT * FROM project_templates WHERE id=?", (tmpl_id,)))
+            if not tpl: self._json(404, {"error":"Plantilla no encontrada"}); return
+            pname = (data.get("name","") or "").strip()
+            pclient = (data.get("client","") or "").strip()
+            if not pname or not pclient: self._json(400, {"error":"Nombre y cliente requeridos"}); return
+            new_pid = run("""INSERT INTO projects
+                (name,client,description,status,priority,work_type,estimated_hours,
+                 start_date,due_date,assigned_to,created_by,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,datetime('now'))""",
+                (pname, pclient, tpl.get("description",""), "active", "normal",
+                 tpl.get("work_type","proyecto"), tpl.get("estimated_hours",0),
+                 data.get("start_date",""), data.get("due_date",""),
+                 data.get("assigned_to") or None, sess["id"]))
+            try:
+                tasks_j = json.loads(tpl.get("tasks_json","[]") or "[]")
+                for t in tasks_j:
+                    run("""INSERT INTO tasks (project_id,title,description,status,priority,created_by,updated_at)
+                        VALUES(?,?,?,?,?,?,datetime('now'))""",
+                        (new_pid, t.get("title","Tarea"), t.get("description",""),
+                         "pending", t.get("priority","normal"), sess["id"]))
+            except Exception:
+                pass
+            self._json(201, {"id":new_pid}); return
+
+        # project comments
         m = re.match(r"^/api/projects/(\d+)/comments$", rel)
         if m:
             pid = int(m.group(1))
@@ -2507,10 +3109,11 @@ class Handler(BaseHTTPRequestHandler):
             t = (data.get("title","") or "").strip()
             if not t: self._json(400, {"error":"Título requerido"}); return
             tid = run("""INSERT INTO tasks
-                (project_id,title,description,status,priority,due_date,created_by,updated_at)
-                VALUES(?,?,?,?,?,?,?,datetime('now'))""",
+                (project_id,title,description,status,priority,start_date,due_date,created_by,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,datetime('now'))""",
                 (pid,t,data.get("description",""),data.get("status","pending"),
-                 data.get("priority","normal"),data.get("due_date",""),sess["id"]))
+                 data.get("priority","normal"),data.get("start_date",""),
+                 data.get("due_date",""),sess["id"]))
             run("UPDATE projects SET updated_at=datetime('now') WHERE id=?", (pid,))
             self._json(201, {"id":tid}); return
 
@@ -2574,11 +3177,12 @@ class Handler(BaseHTTPRequestHandler):
             if q1("SELECT id FROM materials WHERE code=?", (code,)):
                 self._json(400, {"error":f"Código '{code}' ya existe"}); return
             mid = run("""INSERT INTO materials
-                (code,name,description,unit,stock_warehouse,stock_field,stock_min,category,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,datetime('now'))""",
+                (code,name,description,unit,stock_warehouse,stock_field,stock_min,category,unit_cost,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,datetime('now'))""",
                 (code,name,data.get("description",""),data.get("unit","ud"),
                  int(data.get("stock_warehouse") or 0),int(data.get("stock_field") or 0),
-                 int(data.get("stock_min") or 0),data.get("category","")))
+                 int(data.get("stock_min") or 0),data.get("category",""),
+                 float(data.get("unit_cost") or 0)))
             self._json(201, {"id":mid}); return
 
         # create location
@@ -2825,16 +3429,18 @@ class Handler(BaseHTTPRequestHandler):
             new_status = data.get("status","active")
             closing = (new_status == "completed" and old.get("status") != "completed")
             closed_sql = ",closed_at=datetime('now')" if closing else ""
+            new_recurrence = data.get("recurrence","none") or "none"
             run(f"""UPDATE projects SET name=?,client=?,description=?,status=?,priority=?,
                 address=?,reference=?,contact_name=?,contact_phone=?,estimated_hours=?,
-                start_date=?,due_date=?,assigned_to=?,work_type=?,updated_at=datetime('now'){closed_sql} WHERE id=?""",
+                start_date=?,due_date=?,assigned_to=?,work_type=?,recurrence=?,
+                updated_at=datetime('now'){closed_sql} WHERE id=?""",
                 (data.get("name",""),data.get("client",""),data.get("description",""),
                  new_status,data.get("priority","normal"),
                  data.get("address",""),data.get("reference",""),data.get("contact_name",""),
                  data.get("contact_phone",""),float(data.get("estimated_hours") or 0),
                  data.get("start_date",""),data.get("due_date",""),
                  data.get("assigned_to") or None,
-                 data.get("work_type","proyecto") or "proyecto", pid))
+                 data.get("work_type","proyecto") or "proyecto", new_recurrence, pid))
             # audit trail
             _audit_fields = {
                 "status": (old.get("status",""), new_status),
@@ -2865,6 +3471,30 @@ class Handler(BaseHTTPRequestHandler):
                             "due_date": data.get("due_date",""),
                             "work_type": data.get("work_type","proyecto"),
                         }})
+            # auto-create next occurrence when completing a recurring project
+            if closing and new_recurrence != "none":
+                _RECUR_DAYS = {"monthly":30,"quarterly":90,"biannual":180,"annual":365}
+                days = _RECUR_DAYS.get(new_recurrence, 30)
+                next_start = _date.today().isoformat()
+                try:
+                    next_due = (_date.today() + timedelta(days=days)).isoformat()
+                except Exception:
+                    next_due = ""
+                proj_row = r2d(q1("SELECT * FROM projects WHERE id=?", (pid,))) or {}
+                _next_pid = run("""INSERT INTO projects
+                    (name,client,description,status,priority,address,reference,
+                     contact_name,contact_phone,estimated_hours,start_date,due_date,
+                     assigned_to,created_by,work_type,recurrence,recurrence_parent_id,
+                     updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))""",
+                    (proj_row.get("name",""),proj_row.get("client",""),
+                     proj_row.get("description",""),"active",proj_row.get("priority","normal"),
+                     proj_row.get("address",""),proj_row.get("reference",""),
+                     proj_row.get("contact_name",""),proj_row.get("contact_phone",""),
+                     proj_row.get("estimated_hours",0),next_start,next_due,
+                     proj_row.get("assigned_to"),sess["id"],
+                     proj_row.get("work_type","proyecto"),new_recurrence,pid))
+
             resp = {"ok": True}
             if closing:
                 t_row  = q1("SELECT COUNT(*) t, SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) d FROM tasks WHERE project_id=?", (pid,))
@@ -2889,9 +3519,10 @@ class Handler(BaseHTTPRequestHandler):
             if not task: self._json(404, {"error":"Not found"}); return
             comp = str(_date.today()) if data.get("status") == "done" else ""
             run("""UPDATE tasks SET title=?,description=?,status=?,priority=?,
-                due_date=?,completed_date=?,updated_at=datetime('now') WHERE id=?""",
+                start_date=?,due_date=?,completed_date=?,updated_at=datetime('now') WHERE id=?""",
                 (data.get("title",""),data.get("description",""),data.get("status","pending"),
-                 data.get("priority","normal"),data.get("due_date",""),comp,tid))
+                 data.get("priority","normal"),data.get("start_date",""),
+                 data.get("due_date",""),comp,tid))
             run("UPDATE projects SET updated_at=datetime('now') WHERE id=?", (task["project_id"],))
             self._json(200, {"ok":True}); return
 
@@ -2927,11 +3558,12 @@ class Handler(BaseHTTPRequestHandler):
             if q1("SELECT id FROM materials WHERE code=? AND id!=?", (code, mid)):
                 self._json(400, {"error":f"Código '{code}' ya existe"}); return
             run("""UPDATE materials SET code=?,name=?,description=?,unit=?,
-                stock_warehouse=?,stock_field=?,stock_min=?,category=?,
+                stock_warehouse=?,stock_field=?,stock_min=?,category=?,unit_cost=?,
                 updated_at=datetime('now') WHERE id=?""",
                 (code,data.get("name",""),data.get("description",""),data.get("unit","ud"),
                  int(data.get("stock_warehouse") or 0),int(data.get("stock_field") or 0),
-                 int(data.get("stock_min") or 0),data.get("category",""),mid))
+                 int(data.get("stock_min") or 0),data.get("category",""),
+                 float(data.get("unit_cost") or 0),mid))
             self._json(200, {"ok":True}); return
 
         m = re.match(r"^/api/assignments/(\d+)$", rel)
@@ -2961,7 +3593,7 @@ class Handler(BaseHTTPRequestHandler):
             ln = (data.get("last_name","") or "").strip()
             dn = (data.get("display_name","") or "").strip() or (fn + (" " + ln if ln else "")).strip()
             run("UPDATE users SET display_name=?,username=?,role=?,active=?,email=?,show_in_planning=?,"
-                "first_name=?,last_name=?,phone=?,extension=? WHERE id=?",
+                "first_name=?,last_name=?,phone=?,extension=?,labor_rate=? WHERE id=?",
                 (dn, data.get("username",""),
                  data.get("role","technician"), 1 if data.get("active",1) else 0,
                  (data.get("email","") or "").strip(),
@@ -2969,6 +3601,7 @@ class Handler(BaseHTTPRequestHandler):
                  fn, ln,
                  (data.get("phone","") or "").strip(),
                  (data.get("extension","") or "").strip(),
+                 float(data.get("labor_rate") or 0),
                  uid))
             if data.get("password"):
                 if len(data["password"]) < 8:
@@ -3095,6 +3728,42 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as ex:
                 self._json(400, {"error": f"No se puede eliminar: {ex}. Desactiva el usuario en su lugar."})
             return
+
+        m = re.match(r"^/api/certifications/(\d+)$", rel)
+        if m:
+            if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
+            run("DELETE FROM user_certifications WHERE id=?", (int(m.group(1)),))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/tech_availability/(\d+)$", rel)
+        if m:
+            eid = int(m.group(1))
+            row = r2d(q1("SELECT user_id FROM tech_availability WHERE id=?", (eid,)))
+            if not row: self._json(404, {"error":"No encontrado"}); return
+            if sess.get("role") != "admin" and row["user_id"] != sess["id"]:
+                self._json(403, {"error":"Forbidden"}); return
+            run("DELETE FROM tech_availability WHERE id=?", (eid,))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/task_comments/(\d+)$", rel)
+        if m:
+            cid = int(m.group(1))
+            row = r2d(q1("SELECT user_id FROM task_comments WHERE id=?", (cid,)))
+            if row and (row["user_id"] == sess["id"] or sess.get("role") == "admin"):
+                run("DELETE FROM task_comments WHERE id=?", (cid,))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/task_deps/(\d+)$", rel)
+        if m:
+            run("DELETE FROM task_dependencies WHERE id=?", (int(m.group(1)),))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/templates/(\d+)$", rel)
+        if m:
+            if sess.get("role") not in ("admin","backoffice"):
+                self._json(403, {"error":"Forbidden"}); return
+            run("DELETE FROM project_templates WHERE id=?", (int(m.group(1)),))
+            self._json(200, {"ok":True}); return
 
         m = re.match(r"^/api/activities/(\d+)$", rel)
         if m:

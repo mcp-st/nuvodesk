@@ -5,7 +5,7 @@ from core.db import PORT, BP, DATA_DIR, DB_PATH, FILES_DIR, q, q1, run, rs, r2d
 from core.helpers import (
     _hash, _esc, _jattr, _now, _fmt_size, _fmt_duration, _parse_multipart, _stock_move,
     PROJ_COLORS, _pcolor, STATUS_LABEL, STATUS_COLOR, PRIORITY_COLOR,
-    WORK_TYPES, _wt_badge, _badge, _pbadge,
+    WORK_TYPES, _wt_badge, _badge, _pbadge, _badge2, _kpi_card,
 )
 from web.layout import _shell
 
@@ -395,5 +395,258 @@ def _project_report_md(user, pid):
             lines.append(l['body'])
             lines.append("")
     return "\n".join(lines)
+
+
+# ── Parte de trabajo (printable) ──────────────────────────────────────────────
+
+_WTYPE_LBL = {"averia":"Avería","instalacion":"Instalación","mantenimiento":"Mantenimiento",
+               "inspeccion":"Inspección","proyecto":"Proyecto"}
+_KIT_CAT   = {"sfp_10g":"SFP 10G","sfp_1g":"SFP 1G","glc":"GLC/SFP","fiber_patch":"Fibra óptica",
+               "patchcord_rj45":"Patch RJ45","cisco_cable":"Cable Cisco","stack_cable":"Cable STACK",
+               "poe_injector":"Inyector POE","other":"Otro"}
+
+def _project_parte(user, pid):
+    """Printable work order (parte de trabajo) — no sidebar, @media print ready."""
+    p = r2d(q1("""SELECT p.*,u.display_name tech FROM projects p
+        LEFT JOIN users u ON u.id=p.assigned_to WHERE p.id=?""", (pid,)))
+    if not p: return None
+
+    tasks   = rs(q("SELECT * FROM tasks WHERE project_id=? ORDER BY status,created_at", (pid,)))
+    assigns = rs(q("""SELECT a.*,m.name mat_name,m.code mat_code,m.unit mat_unit
+        FROM assignments a JOIN materials m ON m.id=a.material_id
+        WHERE a.project_id=? ORDER BY m.name""", (pid,)))
+    logs    = rs(q("""SELECT l.*,u.display_name uname FROM project_logs l
+        JOIN users u ON u.id=l.user_id WHERE l.project_id=? ORDER BY l.created_at""", (pid,)))
+    kit     = rs(q("""SELECT pk.*,u.display_name uname FROM project_kit pk
+        LEFT JOIN users u ON u.id=pk.added_by
+        WHERE pk.project_id=? ORDER BY pk.status='pending' DESC""", (pid,)))
+    ph = q1("SELECT COALESCE(SUM(hours),0),COALESCE(SUM(hours*technicians),0) FROM project_logs WHERE project_id=?", (pid,))
+    h_logged = round(float(ph[0] or 0), 1)
+
+    task_rows = "".join(
+        f'<tr><td style="text-align:center">{"✅" if t["status"]=="done" else "☐"}</td>'
+        f'<td>{_esc(t["title"])}</td>'
+        f'<td>{STATUS_LABEL.get(t["status"], t["status"])}</td></tr>'
+        for t in tasks)
+    mat_rows = "".join(
+        f'<tr><td><b>[{_esc(a["mat_code"])}]</b> {_esc(a["mat_name"])}</td>'
+        f'<td style="text-align:center">{a["qty_requested"]}</td>'
+        f'<td style="text-align:center">{a["qty_consumed"]}</td>'
+        f'<td>{_esc(a["mat_unit"])}</td></tr>'
+        for a in assigns)
+    kit_rows = "".join(
+        f'<tr><td>{_esc(kr["item_name"])}</td>'
+        f'<td>{_KIT_CAT.get(kr.get("category","other"),"Otro")}</td>'
+        f'<td>{kr["quantity"]} {_esc(kr["unit"])}</td>'
+        f'<td>{"✅ Llevado" if kr["status"]=="brought" else "☐ Pendiente"}</td></tr>'
+        for kr in kit)
+    log_rows = "".join(
+        f'<tr><td>{_esc((l["created_at"] or "")[:10])}</td>'
+        f'<td>{_esc(l["uname"])}</td>'
+        f'<td style="text-align:center">{l["hours"] or "—"}</td>'
+        f'<td>{_esc(l["body"])}</td></tr>'
+        for l in logs)
+
+    today = _date.today().strftime("%d/%m/%Y")
+
+    return f"""<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Parte de trabajo — {_esc(p["name"])}</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:Arial,sans-serif;font-size:11pt;color:#111;background:#fff;padding:24px}}
+h2{{font-size:11pt;font-weight:700;margin:18px 0 8px;border-bottom:2px solid #1e40af;
+    padding-bottom:4px;color:#1e40af}}
+.header{{display:flex;justify-content:space-between;align-items:flex-start;
+    margin-bottom:16px;padding-bottom:12px;border-bottom:3px solid #1e40af}}
+.logo{{font-size:20pt;font-weight:900;color:#1e40af;letter-spacing:-1px}}
+.logo span{{color:#22c55e}}
+.meta{{display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;margin-bottom:16px}}
+.meta-item label{{font-size:8pt;text-transform:uppercase;color:#64748b;display:block}}
+.meta-item span{{font-weight:600}}
+table{{width:100%;border-collapse:collapse;margin-bottom:14px;font-size:10pt}}
+th{{background:#1e40af;color:#fff;padding:5px 8px;text-align:left;font-size:9pt}}
+td{{padding:5px 8px;border-bottom:1px solid #e2e8f0;vertical-align:top}}
+tr:nth-child(even) td{{background:#f8fafc}}
+.signs{{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:24px}}
+.sign-box{{border:1px solid #cbd5e1;border-radius:6px;padding:14px;min-height:90px}}
+.sign-box label{{font-size:8pt;text-transform:uppercase;color:#64748b;display:block;margin-bottom:6px}}
+.sign-line{{border-bottom:1px solid #94a3b8;height:28px;margin-top:12px}}
+@media print{{
+  body{{padding:10px}}
+  .no-print{{display:none!important}}
+  @page{{margin:12mm 15mm}}
+}}
+</style>
+</head>
+<body>
+<div class="header">
+  <div>
+    <div class="logo">Nuvo<span>Link</span></div>
+    <div style="font-size:8pt;color:#64748b;margin-top:2px">Parte de Trabajo</div>
+  </div>
+  <div style="text-align:right;font-size:9pt;color:#64748b">
+    <div style="font-weight:700;color:#111;font-size:13pt">{_esc(p["name"])}</div>
+    {('Ref: #'+_esc(p["reference"])+'<br>') if p.get("reference") else ""}
+    Fecha: {today}
+  </div>
+</div>
+
+<div class="meta">
+  <div class="meta-item"><label>Cliente</label><span>{_esc(p["client"])}</span></div>
+  <div class="meta-item"><label>Tipo</label><span>{_WTYPE_LBL.get(p.get("work_type","proyecto"),"")}</span></div>
+  <div class="meta-item"><label>Técnico</label><span>{_esc(p.get("tech") or "Sin asignar")}</span></div>
+  <div class="meta-item"><label>Estado</label><span>{STATUS_LABEL.get(p["status"],p["status"])}</span></div>
+  <div class="meta-item"><label>Dirección</label><span>{_esc(p.get("address") or "—")}</span></div>
+  <div class="meta-item"><label>Contacto</label><span>{_esc(p.get("contact_name") or "—")}{(" · "+_esc(p["contact_phone"])) if p.get("contact_phone") else ""}</span></div>
+  <div class="meta-item"><label>Inicio</label><span>{_esc((p.get("start_date") or "—")[:10])}</span></div>
+  <div class="meta-item"><label>Cierre previsto</label><span>{_esc((p.get("due_date") or "—")[:10])}</span></div>
+  <div class="meta-item"><label>Horas registradas</label><span>{h_logged}h</span></div>
+  <div class="meta-item"><label>Horas estimadas</label><span>{p.get("estimated_hours") or "—"}h</span></div>
+</div>
+
+{"<h2>Descripción</h2><p style='font-size:10pt;line-height:1.6;margin-bottom:14px'>"+_esc(p.get("description",""))+"</p>" if p.get("description") else ""}
+{"<h2>Tareas</h2><table><thead><tr><th style='width:32px'></th><th>Tarea</th><th style='width:100px'>Estado</th></tr></thead><tbody>"+task_rows+"</tbody></table>" if task_rows else ""}
+{"<h2>Materiales asignados</h2><table><thead><tr><th>Material</th><th style='text-align:center;width:80px'>Solicitado</th><th style='text-align:center;width:80px'>Consumido</th><th style='width:60px'>Ud</th></tr></thead><tbody>"+mat_rows+"</tbody></table>" if mat_rows else ""}
+{"<h2>Maletín de obra</h2><table><thead><tr><th>Ítem</th><th>Categoría</th><th>Cantidad</th><th>Estado</th></tr></thead><tbody>"+kit_rows+"</tbody></table>" if kit_rows else ""}
+{"<h2>Registro de trabajo</h2><table><thead><tr><th style='width:90px'>Fecha</th><th style='width:120px'>Técnico</th><th style='text-align:center;width:60px'>Horas</th><th>Nota</th></tr></thead><tbody>"+log_rows+"</tbody></table>" if log_rows else ""}
+
+<div class="signs">
+  <div class="sign-box">
+    <label>Firma del técnico</label>
+    <div style="font-size:9pt;color:#64748b">Nombre: <span style="display:inline-block;width:160px;border-bottom:1px solid #94a3b8">&nbsp;</span></div>
+    <div class="sign-line"></div>
+  </div>
+  <div class="sign-box">
+    <label>Conformidad del cliente</label>
+    <div style="font-size:9pt;color:#64748b">Nombre: <span style="display:inline-block;width:160px;border-bottom:1px solid #94a3b8">&nbsp;</span></div>
+    <div class="sign-line"></div>
+  </div>
+</div>
+
+<div class="no-print" style="text-align:center;margin-top:28px;display:flex;justify-content:center;gap:12px">
+  <button onclick="window.print()"
+    style="padding:10px 28px;background:#1e40af;color:#fff;border:none;border-radius:8px;font-size:12pt;cursor:pointer">
+    🖨️ Imprimir / Guardar PDF
+  </button>
+  <button onclick="window.close()"
+    style="padding:10px 24px;background:#f1f5f9;color:#374151;border:1px solid #cbd5e1;border-radius:8px;font-size:12pt;cursor:pointer">
+    ✕ Cerrar
+  </button>
+</div>
+</body>
+</html>"""
+
+
+# ── Rentabilidad ─────────────────────────────────────────────────────────────
+
+def _profitability_page(user):
+    if user.get("role") not in ("admin", "backoffice"):
+        return None
+
+    projects = rs(q("""
+        SELECT p.id,p.name,p.client,p.status,p.work_type,p.estimated_hours,
+               u.display_name tech, COALESCE(u.labor_rate,0) labor_rate,
+               COALESCE(SUM(
+                 CASE WHEN te.ended_at IS NOT NULL
+                 THEN (julianday(te.ended_at)-julianday(te.started_at))*24 ELSE 0 END),0) actual_h,
+               COALESCE(SUM(pl.hours * COALESCE(pl.technicians,1)),0) logged_ph
+        FROM projects p
+        LEFT JOIN users u ON u.id=p.assigned_to
+        LEFT JOIN time_entries te ON te.project_id=p.id
+        LEFT JOIN project_logs pl ON pl.project_id=p.id
+        WHERE p.status NOT IN ('cancelled')
+        GROUP BY p.id
+        ORDER BY p.updated_at DESC LIMIT 60"""))
+
+    mat_costs = rs(q("""
+        SELECT a.project_id,
+               COALESCE(SUM(a.qty_consumed * COALESCE(m.unit_cost,0)),0) mat_cost
+        FROM assignments a JOIN materials m ON m.id=a.material_id
+        GROUP BY a.project_id"""))
+    mc_map = {r['project_id']: float(r['mat_cost'] or 0) for r in mat_costs}
+
+    has_rates    = any(float(p.get('labor_rate') or 0) > 0 for p in projects)
+    has_mat_cost = any(mc_map.get(p['id'], 0) > 0 for p in projects)
+
+    total_labor = 0.0
+    total_mat   = 0.0
+    total_h_all = 0.0
+
+    rows = ""
+    for p in projects:
+        h = round(float(p['actual_h'] or p['logged_ph'] or 0), 1)
+        rate = float(p.get('labor_rate') or 0)
+        labor_c = round(h * rate, 2)
+        mat_c   = round(mc_map.get(p['id'], 0), 2)
+        total_c = labor_c + mat_c
+        total_labor += labor_c; total_mat += mat_c; total_h_all += h
+
+        labor_td = f'{labor_c:.2f} €' if rate else '<span class="muted">—</span>'
+        mat_td   = f'{mat_c:.2f} €'   if mat_c else '<span class="muted">—</span>'
+        total_td = f'<strong>{total_c:.2f} €</strong>' if total_c else '<span class="muted">—</span>'
+
+        rows += (
+            f'<tr><td><a href="{BP}/projects/{p["id"]}" class="fw7">{_esc(p["name"])}</a>'
+            f'<br><span class="muted" style="font-size:.75rem">{_esc(p["client"])}</span></td>'
+            f'<td>{_badge2(p["status"])}</td>'
+            f'<td class="muted">{_esc(p["tech"] or "—")}</td>'
+            f'<td class="muted" style="text-align:center">{h}h</td>'
+            f'<td class="muted" style="text-align:center">{_esc(str(p.get("estimated_hours") or "—"))}</td>'
+            f'<td style="text-align:right">{labor_td}</td>'
+            f'<td style="text-align:right">{mat_td}</td>'
+            f'<td style="text-align:right">{total_td}</td></tr>'
+        )
+
+    kpis = (
+        '<div class="nd-kpi-strip" style="margin-bottom:20px">'
+        + _kpi_card(len(projects), "Proyectos analizados", "brand", "📊")
+        + _kpi_card(f"{total_h_all:.1f}h", "Horas totales", "info", "⏱")
+        + _kpi_card(f"{total_labor:.0f}€" if has_rates else "—", "Coste mano obra", "warn", "👤")
+        + _kpi_card(f"{total_mat:.0f}€"   if has_mat_cost else "—", "Coste materiales", "err", "📦")
+        + '</div>'
+    )
+
+    notice = ""
+    if not has_rates or not has_mat_cost:
+        notice = """<div class="card" style="border-left:4px solid var(--s-warn);margin-bottom:16px">
+  <p class="muted" style="font-size:.88rem">
+    ⚠️ Para ver costes completos: configura <strong>Tarifa/hora</strong> en el perfil de cada usuario
+    y <strong>Coste unitario</strong> en cada material del inventario.
+  </p>
+</div>"""
+
+    content = f"""
+<div class="toolbar"><h1>📊 Rentabilidad</h1>
+  <a href="{BP}/reports" class="btn btn-ghost btn-sm">← Informes</a>
+</div>
+{notice}
+{kpis}
+<div class="card">
+  <div class="tbl-wrap">
+    <table><thead><tr>
+      <th>Proyecto</th><th>Estado</th><th>Técnico</th>
+      <th style="text-align:center">H. reales</th><th style="text-align:center">H. estimadas</th>
+      <th style="text-align:right">Mano obra</th>
+      <th style="text-align:right">Materiales</th>
+      <th style="text-align:right">Total</th>
+    </tr></thead>
+    <tbody>{rows or "<tr><td colspan='8' class='muted' style='text-align:center;padding:24px'>Sin datos</td></tr>"}</tbody>
+    <tfoot><tr style="font-weight:700;background:var(--bg3)">
+      <td colspan="3">Total</td>
+      <td style="text-align:center">{total_h_all:.1f}h</td>
+      <td></td>
+      <td style="text-align:right">{f"{total_labor:.2f} €" if has_rates else "—"}</td>
+      <td style="text-align:right">{f"{total_mat:.2f} €" if has_mat_cost else "—"}</td>
+      <td style="text-align:right">{f"<strong>{(total_labor+total_mat):.2f} €</strong>" if (has_rates or has_mat_cost) else "—"}</td>
+    </tr></tfoot>
+  </table></div>
+</div>"""
+
+    return _shell("profitability", user, content, title="Rentabilidad")
+
 
 # ── calendar ─────────────────────────────────────────────────────────────────

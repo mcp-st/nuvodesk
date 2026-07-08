@@ -1,12 +1,7 @@
-"""Tech kit page."""
-import os, json, re, mimetypes, calendar as _cal
-from datetime import datetime, date as _date, timedelta
-from core.db import PORT, BP, DATA_DIR, DB_PATH, FILES_DIR, q, q1, run, rs, r2d
-from core.helpers import (
-    _hash, _esc, _jattr, _now, _fmt_size, _fmt_duration, _parse_multipart, _stock_move,
-    PROJ_COLORS, _pcolor, STATUS_LABEL, STATUS_COLOR, PRIORITY_COLOR,
-    WORK_TYPES, _wt_badge, _badge, _pbadge,
-)
+"""Kit técnico — vista global del maletín de obra por proyecto."""
+import json
+from core.db import BP, q, q1, rs
+from core.helpers import _esc, _badge2, _kpi_card, _empty_state
 from web.layout import _shell
 
 def _kit_page(user):
@@ -18,12 +13,11 @@ def _kit_page(user):
         "other":("Otro","rc-other"),
     }
     _KIT_ST = {
-        "pending":("⏳ Pendiente","rec-status-pending"),
-        "brought":("✅ Llevado","rec-status-brought"),
-        "not_needed":("— No necesario","rec-status-not_needed"),
+        "pending":    ("⏳ Pendiente",  "rec-status-pending"),
+        "brought":    ("✅ Llevado",    "rec-status-brought"),
+        "not_needed": ("— No necesario","rec-status-not_needed"),
     }
 
-    # Projects that have kit recommendations (active/paused first)
     projects_with_kit = rs(q("""
         SELECT p.id,p.name,p.client,p.status,
             COUNT(pk.id) total_items,
@@ -33,12 +27,10 @@ def _kit_page(user):
         ORDER BY CASE p.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,
                  SUM(CASE WHEN pk.status='pending' THEN 1 ELSE 0 END) DESC"""))
 
-    # KPI counts
-    total_recs = q1("SELECT COUNT(*) FROM project_kit")[0]
+    total_recs   = q1("SELECT COUNT(*) FROM project_kit")[0]
     pending_recs = q1("SELECT COUNT(*) FROM project_kit WHERE status='pending'")[0]
     brought_recs = q1("SELECT COUNT(*) FROM project_kit WHERE status='brought'")[0]
 
-    # Build project cards
     proj_cards_html = ""
     for proj in projects_with_kit:
         recs = rs(q("""SELECT pk.*,u.display_name uname
@@ -48,12 +40,11 @@ def _kit_page(user):
         items_html = ""
         for kr in recs:
             cat_lbl, cat_cls = _KIT_CATS.get(kr.get("category","other"), ("Otro","rc-other"))
-            st_lbl, st_cls = _KIT_ST.get(kr.get("status","pending"), ("⏳ Pendiente","rec-status-pending"))
+            st_lbl, st_cls   = _KIT_ST.get(kr.get("status","pending"), ("⏳ Pendiente","rec-status-pending"))
             notes_txt = f' · {_esc(kr["notes"])}' if kr.get("notes") else ""
-            qty_unit = f'{_esc(str(kr["quantity"]))} {_esc(kr["unit"])}'
-            krid = kr["id"]
-            status_val = kr.get("status","pending")
-            if status_val == "pending":
+            qty_unit  = f'{_esc(str(kr["quantity"]))} {_esc(kr["unit"])}'
+            krid      = kr["id"]
+            if kr.get("status","pending") == "pending":
                 actions = (f'<button class="btn btn-ghost btn-icon" title="Marcar como llevado" '
                     f'onclick="kitSetStatus({krid},\'brought\')">✅</button>'
                     f'<button class="btn btn-ghost btn-icon" title="No necesario" '
@@ -74,17 +65,17 @@ def _kit_page(user):
                 f'<button class="btn btn-danger btn-icon" onclick="delKitRec({krid})">✕</button>'
                 f'</div></div>')
 
-        pending_badge = (f'<span style="background:rgba(245,158,11,.15);color:#d97706;'
-            f'padding:2px 8px;border-radius:999px;font-size:.7rem;font-weight:700">'
-            f'{proj["pending_items"]} pendiente{"s" if proj["pending_items"]!=1 else ""}</span>'
-            if proj["pending_items"] else
-            f'<span style="background:rgba(16,185,129,.12);color:#059669;'
-            f'padding:2px 8px;border-radius:999px;font-size:.7rem;font-weight:700">✓ Todo listo</span>')
+        if proj["pending_items"]:
+            pending_badge = (f'<span class="badge badge-warn">'
+                f'{proj["pending_items"]} pendiente{"s" if proj["pending_items"]!=1 else ""}</span>')
+        else:
+            pending_badge = '<span class="badge badge-ok">✓ Listo</span>'
 
         proj_cards_html += f"""<div class="rec-proj-card">
   <h3>
     <a href="{BP}/projects/{proj['id']}" style="color:inherit;text-decoration:none">{_esc(proj['name'])}</a>
     <span class="proj-badge">{_esc(proj['client'])}</span>
+    {_badge2(proj['status'])}
     {pending_badge}
     <span style="margin-left:auto;font-size:.72rem;color:var(--muted);font-weight:400">{proj['total_items']} items</span>
   </h3>
@@ -92,37 +83,25 @@ def _kit_page(user):
 </div>"""
 
     if not proj_cards_html:
-        proj_cards_html = """<div class="card" style="text-align:center;padding:40px">
-  <div style="font-size:2rem;margin-bottom:10px">📦</div>
-  <div style="font-weight:700;margin-bottom:6px">Sin recomendaciones todavía</div>
-  <p class="muted" style="font-size:.87rem">
-    Abre un proyecto activo, ve a la pestaña <strong>📦 Material</strong> y añade<br>
-    las recomendaciones de material para el equipo de campo.
-  </p>
-</div>"""
+        proj_cards_html = _empty_state(
+            "🧰",
+            "Sin items en el maletín",
+            'Abre un proyecto activo, ve a la pestaña <strong>Recursos → Maletín de obra</strong> y añade los items que el equipo de campo debería llevar.'
+        )
 
     content = f"""
 <div class="toolbar">
-  <h1>📦 Recomendaciones de material</h1>
+  <h1>🧰 Maletín de obra</h1>
 </div>
 <p class="muted" style="font-size:.87rem;margin-bottom:20px;line-height:1.6">
-  Vista global de todas las recomendaciones de material hechas por los jefes de proyecto.
-  El equipo de campo puede marcar cada ítem como <em>llevado</em> o <em>no necesario</em>.
+  Vista global del material preparado por proyecto.
+  El equipo de campo marca cada ítem como <em>llevado</em> o <em>no necesario</em>.
 </p>
 
-<div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:24px">
-  <div class="kpi">
-    <div class="val">{total_recs}</div>
-    <div class="lbl">Total recomendaciones</div>
-  </div>
-  <div class="kpi a">
-    <div class="val">{pending_recs}</div>
-    <div class="lbl">Pendientes</div>
-  </div>
-  <div class="kpi g">
-    <div class="val">{brought_recs}</div>
-    <div class="lbl">Llevadas</div>
-  </div>
+<div class="nd-kpi-strip" style="margin-bottom:24px">
+  {_kpi_card(total_recs,   "Items totales",  "brand", "🧰")}
+  {_kpi_card(pending_recs, "Pendientes",      "warn",  "⏳")}
+  {_kpi_card(brought_recs, "Llevados",        "ok",    "✅")}
 </div>
 
 {proj_cards_html}
@@ -136,11 +115,12 @@ function kitSetStatus(id,status){{
     .then(function(r){{if(r.ok)location.reload();}});
 }}
 function delKitRec(id){{
-  if(!confirm('¿Eliminar esta recomendación?')) return;
-  fetch(bp+'/api/project_kit/'+id,{{method:'DELETE'}})
-    .then(function(r){{if(r.ok)location.reload();}});
+  ConfirmDialog.show('¿Eliminar este item del maletín?','')
+    .then(function(ok){{
+      if(!ok)return;
+      fetch(bp+'/api/project_kit/'+id,{{method:'DELETE'}})
+        .then(function(r){{if(r.ok)location.reload();}});
+    }});
 }}
 </script>"""
-    return _shell("kit", user, content)
-
-# ── users ─────────────────────────────────────────────────────────────────────
+    return _shell("kit", user, content, title="Kit técnico")

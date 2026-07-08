@@ -221,7 +221,7 @@ def _download_page(user):
   </div>
 </div>
 """
-    return _shell("download", user, content)
+    return _shell("download", user, content, title="Descargas")
 
 
 def _set_password_page(token, err=""):

@@ -143,7 +143,7 @@ document.getElementById('smtp-form').onsubmit=function(e){{
 }};
 function testEmail(){{
   var to=document.getElementById('test-email').value.trim();
-  if(!to){{alert('Escribe una dirección de destino');return;}}
+  if(!to){{Toast.show('Escribe una dirección de destino','err');return;}}
   var msg=document.getElementById('test-msg');
   msg.textContent='Enviando...';msg.style.color='var(--muted)';
   fetch(bp+'/api/settings/test_email',{{method:'POST',
@@ -165,4 +165,4 @@ function saveDueDays(v){{
     body:JSON.stringify({{notif_due_days:v}})}});
 }}
 </script>"""
-    return _shell("settings", user, content)
+    return _shell("settings", user, content, title="Configuración")

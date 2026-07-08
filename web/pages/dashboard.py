@@ -1,13 +1,11 @@
 """Dashboard page."""
-import os, json, re, mimetypes, calendar as _cal
-from datetime import datetime, date as _date, timedelta
-from core.db import PORT, BP, DATA_DIR, DB_PATH, FILES_DIR, q, q1, run, rs, r2d
+from datetime import date as _date
+from core.db import BP, q, q1, rs, r2d
 from core.helpers import (
-    _hash, _esc, _jattr, _now, _fmt_size, _fmt_duration, _parse_multipart, _stock_move,
-    PROJ_COLORS, _pcolor, STATUS_LABEL, STATUS_COLOR, PRIORITY_COLOR,
-    WORK_TYPES, _wt_badge, _badge, _pbadge,
+    _esc, _badge2, _pbadge, _kpi_card, _triage_item,
 )
 from web.layout import _shell
+
 
 def _my_day(user):
     uid = user["id"]
@@ -38,14 +36,14 @@ def _my_day(user):
     timer_html = ""
     if active_te:
         started_iso = (active_te.get("started_at") or "").replace(" ", "T")
-        timer_html = f"""<div class="card" style="border-left:4px solid var(--green,#15803d);margin-bottom:0">
+        timer_html = f"""<div class="card" style="border-left:4px solid var(--s-ok);margin-bottom:0">
   <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
     <span class="timer-pulse"></span>
     <div>
-      <div style="font-size:.75rem;font-weight:700;color:var(--green,#15803d);text-transform:uppercase">Jornada activa</div>
+      <div style="font-size:.75rem;font-weight:700;color:var(--s-ok);text-transform:uppercase">Jornada activa</div>
       <div class="fw7">{_esc(active_te.get("pname",""))}</div>
     </div>
-    <div id="md-elapsed" style="font-size:1.2rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--green,#15803d);margin-left:auto">—</div>
+    <div id="md-elapsed" style="font-size:1.2rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--s-ok);margin-left:auto">—</div>
   </div>
 </div>
 <script>
@@ -55,11 +53,9 @@ def _my_day(user):
     proj_rows = ""
     for p in my_projects:
         pct = int(p['task_d']/p['task_t']*100) if p['task_t'] else 0
-        pc = PRIORITY_COLOR.get(p['priority'], "#64748b")
-        plabel = {"low":"Baja","normal":"Normal","high":"Alta","urgent":"Urgente"}.get(p["priority"],"")
         proj_rows += (f'<tr><td><a href="{BP}/projects/{p["id"]}" class="fw7">{_esc(p["name"])}</a>'
             f'<br><span class="muted" style="font-size:.75rem">{_esc(p["client"])}</span></td>'
-            f'<td><span style="color:{pc};font-weight:700;font-size:.8rem">▲ {plabel}</span></td>'
+            f'<td>{_pbadge(p["priority"])}</td>'
             f'<td class="muted">{_esc((p["due_date"] or "—")[:10])}</td>'
             f'<td style="min-width:90px"><div class="progress" style="display:inline-block;width:60px;vertical-align:middle">'
             f'<div class="progress-bar" style="width:{pct}%"></div></div>'
@@ -68,20 +64,60 @@ def _my_day(user):
 
     task_rows = ""
     for t in my_tasks:
-        pc = PRIORITY_COLOR.get(t['priority'], "#64748b")
         overdue_cls = ' class="text-red"' if t.get('due_date') and t['due_date'] < today else ''
-        task_rows += (f'<tr><td>{_badge(t["status"])}</td>'
+        task_rows += (f'<tr><td>{_badge2(t["status"])}</td>'
             f'<td class="fw7">{_esc(t["title"])}</td>'
             f'<td><a href="{BP}/projects/{t["pid"]}" style="color:var(--muted);font-size:.8rem">{_esc(t["pname"])}</a></td>'
             f'<td{overdue_cls} class="muted" style="font-size:.8rem">{_esc((t["due_date"] or "—")[:10])}</td></tr>')
 
+    kpis = (
+        '<div class="nd-kpi-strip" style="margin-bottom:16px">'
+        + _kpi_card(len(my_projects), "Proyectos activos", "brand", "📁")
+        + _kpi_card(len(my_tasks),    "Tareas pendientes", "warn",  "📋")
+        + _kpi_card(f"{h_today}h",    "Horas hoy",         "ok",    "⏱")
+        + '</div>'
+    )
+
+    averia_modal_day = f"""
+<div class="modal-bg" id="averia-modal">
+<div class="modal">
+  <h2>⚡ Avería rápida</h2>
+  <form id="averia-form">
+  <div class="form-row">
+    <div><label>Cliente *</label><input id="av-client" required placeholder="Nombre del cliente"></div>
+  </div>
+  <div class="form-row">
+    <div><label>Descripción *</label><textarea id="av-desc" required rows="3" placeholder="Describe brevemente la avería"></textarea></div>
+  </div>
+  <div class="form-row">
+    <div><label>Teléfono contacto</label><input id="av-phone" type="tel" placeholder="Opcional"></div>
+  </div>
+  <div class="modal-foot">
+    <button type="button" class="btn btn-ghost" onclick="document.getElementById('averia-modal').classList.remove('open')">Cancelar</button>
+    <button type="submit" class="btn btn-primary">⚡ Crear avería</button>
+  </div>
+  </form>
+</div></div>
+<script>
+var _bp='{BP}';
+function openAveriaRapida(){{document.getElementById('averia-modal').classList.add('open');document.getElementById('av-client').focus();}}
+document.getElementById('averia-modal').onclick=function(e){{if(e.target===this)this.classList.remove('open');}};
+document.getElementById('averia-form').onsubmit=function(e){{
+  e.preventDefault();
+  fetch(_bp+'/api/projects',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{name:'Avería '+document.getElementById('av-client').value,
+      client:document.getElementById('av-client').value,
+      description:document.getElementById('av-desc').value,
+      contact_phone:document.getElementById('av-phone').value,
+      work_type:'averia',status:'active',priority:'urgent'}})}})
+    .then(function(r){{return r.json();}})
+    .then(function(d){{if(d.id)window.location=_bp+'/projects/'+d.id;else Toast.show('Error al crear avería','err');}});
+}};
+</script>"""
+
     content = f"""<div class="toolbar"><h1>Mi jornada</h1>
-  <a href="{BP}/projects?new=averia" class="btn btn-primary">⚡ Avería rápida</a></div>
-<div class="card-grid" style="margin-bottom:16px">
-  <div class="kpi g"><div class="val">{len(my_projects)}</div><div class="lbl">Proyectos activos</div></div>
-  <div class="kpi"><div class="val">{len(my_tasks)}</div><div class="lbl">Tareas pendientes</div></div>
-  <div class="kpi"><div class="val">{h_today}h</div><div class="lbl">Horas hoy</div></div>
-</div>
+  <button class="btn btn-primary" onclick="openAveriaRapida()">⚡ Avería rápida</button></div>
+{kpis}
 {timer_html}
 <div class="card">
   <div class="toolbar"><h2>Mis proyectos activos</h2>
@@ -92,7 +128,7 @@ def _my_day(user):
   <h2>Mis tareas pendientes</h2>
   {"<div class='tbl-wrap'><table><thead><tr><th>Estado</th><th>Tarea</th><th>Proyecto</th><th>Límite</th></tr></thead><tbody>" + task_rows + "</tbody></table></div>" if task_rows else "<p class='muted' style='text-align:center;padding:24px'>Sin tareas pendientes asignadas</p>"}
 </div>"""
-    return _shell("dashboard", user, content)
+    return _shell("dashboard", user, content + averia_modal_day, title="Mi jornada")
 
 
 def _dashboard(user):
@@ -129,15 +165,49 @@ def _dashboard(user):
         LEFT JOIN users u ON u.id=p.assigned_to
         ORDER BY p.updated_at DESC LIMIT 8"""))
 
+    today = _date.today().isoformat()
 
-    kpis = f"""<div class="card-grid">
-  <div class="kpi"><div class="val">{ps.get('t') or 0}</div><div class="lbl">Proyectos</div></div>
-  <div class="kpi g"><div class="val">{ps.get('active') or 0}</div><div class="lbl">Activos</div></div>
-  <div class="kpi a"><div class="val">{ps.get('paused') or 0}</div><div class="lbl">Pausados</div></div>
-  <div class="kpi"><div class="val">{ps.get('done') or 0}</div><div class="lbl">Completados</div></div>
-  <div class="kpi"><div class="val">{ts.get('t') or 0}</div><div class="lbl">Tareas</div></div>
-  <div class="kpi r"><div class="val">{ts.get('blocked') or 0}</div><div class="lbl">Bloqueadas</div></div>
-</div>"""
+    blocked_tasks = rs(q("""SELECT t.id,t.title,t.due_date,p.id pid,p.name pname,u.display_name tech
+        FROM tasks t JOIN projects p ON p.id=t.project_id
+        LEFT JOIN users u ON u.id=t.assigned_to
+        WHERE t.status='blocked' AND p.status='active'
+        ORDER BY t.due_date ASC LIMIT 10"""))
+
+    blocked_projects = rs(q("""SELECT DISTINCT p.id FROM projects p
+        JOIN tasks t ON t.project_id=p.id
+        WHERE t.status='blocked' AND p.status='active'"""))
+    blocked_ids = {p["id"] for p in (blocked_projects or [])}
+
+    urgent_overdue_projs = rs(q("""SELECT id, due_date FROM projects
+        WHERE status='active' AND priority='urgent'
+          AND due_date!='' AND due_date<date('now')"""))
+    urgent_overdue_ids = {p["id"] for p in (urgent_overdue_projs or [])}
+
+    fuego_ids = blocked_ids | urgent_overdue_ids
+    n_fuego   = len(fuego_ids)
+
+    today_tasks = rs(q("""SELECT DISTINCT project_id FROM tasks
+        WHERE status NOT IN ('done','cancelled') AND due_date=date('now')"""))
+    n_hoy = len(today_tasks or [])
+
+    n_semana = len(due_week)
+
+    triage_html = (
+        f'<div class="nd-triage-rail">'
+        + _triage_item(n_fuego,  "FUEGO",        f"{n_fuego} proyectos críticos únicos",   "err",   f"{BP}/projects?filter=urgent")
+        + _triage_item(n_hoy,    "HOY",          f"{n_hoy} tareas con vencimiento hoy",     "warn",  f"{BP}/projects?filter=today")
+        + _triage_item(n_semana, "ESTA SEMANA",  f"{n_semana} proyectos vencen en 7 días",  "brand", f"{BP}/projects?filter=week")
+        + '</div>'
+    )
+
+    kpis = (
+        '<div class="nd-kpi-strip">'
+        + _kpi_card(ps.get('active') or 0,  "Proyectos activos",  "brand", "📁", f"Total: {ps.get('t') or 0}")
+        + _kpi_card(n_semana,                "Vencen esta semana", "warn",  "⏰", f"{n_fuego} urgentes")
+        + _kpi_card(ts.get('blocked') or 0, "Tareas bloqueadas",  "err",   "🚫")
+        + _kpi_card(ps.get('done') or 0,    "Completados",        "ok",    "✅")
+        + '</div>'
+    )
 
     low_html = ""
     if low_stock:
@@ -146,7 +216,7 @@ def _dashboard(user):
             f"<td class='text-red fw7'>{m['stock_warehouse']}</td>"
             f"<td class='muted'>{m['stock_min']}</td>"
             f"<td class='muted'>{_esc(m['unit'])}</td></tr>" for m in low_stock)
-        low_html = f"""<div class="card" style="border-left:4px solid var(--amber)">
+        low_html = f"""<div class="card" style="border-left:4px solid var(--s-warn)">
   <h2>⚠️ Stock crítico ({len(low_stock)})</h2>
   <div class="tbl-wrap"><table><thead><tr><th>Código</th><th>Material</th>
     <th>Almacén</th><th>Mínimo</th><th>Ud</th></tr></thead><tbody>{rows}</tbody></table></div>
@@ -158,13 +228,12 @@ def _dashboard(user):
             f"<td><a href='{BP}/projects/{t['pid']}'>{_esc(t['pname'])}</a></td>"
             f"<td>{_esc(t['title'])}</td>"
             f"<td class='text-red'>{_esc(t['due_date'])}</td>"
-            f"<td>{_badge(t['status'])}</td></tr>" for t in overdue)
-        od_html = f"""<div class="card" style="border-left:4px solid var(--red)">
+            f"<td>{_badge2(t['status'])}</td></tr>" for t in overdue)
+        od_html = f"""<div class="card" style="border-left:4px solid var(--s-err)">
   <h2>🕒 Tareas vencidas ({len(overdue)})</h2>
   <div class="tbl-wrap"><table><thead><tr><th>Proyecto</th><th>Tarea</th>
     <th>Vencimiento</th><th>Estado</th></tr></thead><tbody>{rows}</tbody></table></div>
 </div>"""
-
 
     dw_html = ""
     if due_week:
@@ -175,7 +244,7 @@ def _dashboard(user):
             f"<td>{_pbadge(p['priority'])}</td>"
             f"<td class='muted col-m-hide'>{_esc(p['tech'] or '—')}</td></tr>"
             for p in due_week)
-        dw_html = f"""<div class="card" style="border-left:4px solid var(--blue)">
+        dw_html = f"""<div class="card" style="border-left:4px solid var(--brand)">
   <h2>📅 Vence esta semana ({len(due_week)})</h2>
   <div class="tbl-wrap"><table><thead><tr><th>Proyecto</th>
     <th>Límite</th><th>Prioridad</th><th class="col-m-hide">Técnico</th>
@@ -185,7 +254,7 @@ def _dashboard(user):
     rp_rows = "".join(f"<tr>"
         f"<td><a href='{BP}/projects/{p['id']}' class='fw7'>{_esc(p['name'])}</a>"
         f"<br><span class='muted' style='font-size:.75rem'>{_esc(p['client'])}</span></td>"
-        f"<td>{_badge(p['status'])}</td><td class='col-m-hide'>{_pbadge(p['priority'])}</td>"
+        f"<td>{_badge2(p['status'])}</td><td class='col-m-hide'>{_pbadge(p['priority'])}</td>"
         f"<td class='muted col-m-hide'>{_esc(p['tech'] or '—')}</td>"
         f"<td class='muted col-m-hide'>{_esc((p['due_date'] or '—')[:10])}</td></tr>" for p in recent)
 
@@ -197,9 +266,68 @@ def _dashboard(user):
     <th class="col-m-hide">Límite</th></tr></thead><tbody>{rp_rows}</tbody></table></div>
 </div>"""
 
+    bt_html = ""
+    if blocked_tasks:
+        bt_rows = "".join(
+            f"<tr>"
+            f"<td><a href='{BP}/projects/{t['pid']}'>{_esc(t['pname'])}</a></td>"
+            f"<td class='fw7'>{_esc(t['title'])}</td>"
+            f"<td class='muted col-m-hide'>{_esc(t['tech'] or '—')}</td>"
+            f"<td class='muted col-m-hide'>{_esc((t['due_date'] or '—')[:10])}</td>"
+            f"<td><button class='btn btn-ghost btn-sm' onclick='unblockTask({t['id']})'>▶ Desbloquear</button></td></tr>"
+            for t in blocked_tasks)
+        bt_html = f"""<div class="card" style="border-left:4px solid var(--s-err)">
+  <h2>🚫 Tareas bloqueadas ({len(blocked_tasks)})</h2>
+  <div class="tbl-wrap"><table><thead><tr><th>Proyecto</th><th>Tarea</th>
+    <th class="col-m-hide">Técnico</th><th class="col-m-hide">Límite</th><th></th>
+  </tr></thead><tbody>{bt_rows}</tbody></table></div>
+</div>"""
+
+    averia_modal = f"""
+<div class="modal-bg" id="averia-modal">
+<div class="modal">
+  <h2>⚡ Avería rápida</h2>
+  <form id="averia-form">
+  <div class="form-row">
+    <div><label>Cliente *</label><input id="av-client" required placeholder="Nombre del cliente"></div>
+  </div>
+  <div class="form-row">
+    <div><label>Descripción *</label><textarea id="av-desc" required rows="3" placeholder="Describe brevemente la avería"></textarea></div>
+  </div>
+  <div class="form-row">
+    <div><label>Teléfono contacto</label><input id="av-phone" type="tel" placeholder="Opcional"></div>
+  </div>
+  <div class="modal-foot">
+    <button type="button" class="btn btn-ghost" onclick="document.getElementById('averia-modal').classList.remove('open')">Cancelar</button>
+    <button type="submit" class="btn btn-primary">⚡ Crear avería</button>
+  </div>
+  </form>
+</div></div>
+<script>
+var _bp='{BP}';
+function openAveriaRapida(){{document.getElementById('averia-modal').classList.add('open');document.getElementById('av-client').focus();}}
+document.getElementById('averia-modal').onclick=function(e){{if(e.target===this)this.classList.remove('open');}};
+document.getElementById('averia-form').onsubmit=function(e){{
+  e.preventDefault();
+  fetch(_bp+'/api/projects',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{name:'Avería '+document.getElementById('av-client').value,
+      client:document.getElementById('av-client').value,
+      description:document.getElementById('av-desc').value,
+      contact_phone:document.getElementById('av-phone').value,
+      work_type:'averia',status:'active',priority:'urgent'}})}})
+    .then(function(r){{return r.json();}})
+    .then(function(d){{if(d.id)window.location=_bp+'/projects/'+d.id;else Toast.show('Error al crear avería','err');}});
+}};
+function unblockTask(tid){{
+  fetch(_bp+'/api/tasks/'+tid+'/toggle',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{status:'in_progress'}})}})
+    .then(function(r){{if(r.ok){{Toast.show('Tarea desbloqueada','ok');location.reload();}}else Toast.show('Error al desbloquear','err');}});
+}}
+</script>"""
+
     content = (f'<div class="toolbar"><h1>Dashboard</h1>'
-               f'<a href="{BP}/projects?new=averia" class="btn btn-primary">⚡ Avería rápida</a></div>'
-               f'{kpis}{dw_html}{low_html}{od_html}{rp_html}')
-    return _shell("dashboard", user, content)
+               f'<button class="btn btn-primary" onclick="openAveriaRapida()">⚡ Avería rápida</button></div>'
+               f'{triage_html}{kpis}{bt_html}{dw_html}{low_html}{od_html}{rp_html}{averia_modal}')
+    return _shell("dashboard", user, content, title="Dashboard")
 
 # ── projects list ─────────────────────────────────────────────────────────────

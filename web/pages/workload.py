@@ -97,7 +97,7 @@ def _workload_page(user, week_str=""):
 <p class="muted" style="font-size:.78rem;margin-top:8px">
   Muestra jornadas registradas (temporizador) por técnico y día. Sin registros = celda vacía.
 </p>"""
-    return _shell("workload", user, content)
+    return _shell("workload", user, content, title="Carga de trabajo")
 
 # ── download page ─────────────────────────────────────────────────────────────
 def _download_page(user):
@@ -207,7 +207,7 @@ def _download_page(user):
   </div>
 </div>
 """
-    return _shell("download", user, content)
+    return _shell("download", user, content, title="Descargas")
 
 
 # ── HTTP handler ──────────────────────────────────────────────────────────────
