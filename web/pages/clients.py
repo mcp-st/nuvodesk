@@ -1,7 +1,7 @@
 """Histórico de clientes."""
 import json
 from core.db import BP, q, q1, rs, r2d
-from core.helpers import _esc, _badge2, _pbadge, _kpi_card, _empty_state, _fmt_duration
+from core.helpers import _esc, _badge2, _pbadge, _kpi_card, _empty_state, _fmt_duration, _fd
 from web.layout import _shell
 
 
@@ -28,7 +28,7 @@ def _clients_page(user):
     rows = ""
     for c in clients:
         h = round(float(c['total_hours'] or 0), 1)
-        last = (c['last_activity'] or '')[:10]
+        last = _fd(c.get('last_activity') or '')
         active_badge = (f'<span class="badge badge-ok">{c["n_active"]} activo{"s" if c["n_active"]!=1 else ""}</span>'
                         if c['n_active'] else '<span class="muted">—</span>')
         rows += (
@@ -98,8 +98,8 @@ def _client_detail(user, client_name):
         f'<td>{_badge2(p["status"])}</td>'
         f'<td>{_pbadge(p["priority"])}</td>'
         f'<td class="muted">{_esc(p["tech"] or "—")}</td>'
-        f'<td class="muted col-m-hide">{_esc((p["due_date"] or "—")[:10])}</td>'
-        f'<td class="muted col-m-hide">{_esc((p["updated_at"] or "")[:10])}</td>'
+        f'<td class="muted col-m-hide">{_fd(p.get("due_date") or "")}</td>'
+        f'<td class="muted col-m-hide">{_fd(p.get("updated_at") or "")}</td>'
         f'<td><a href="{BP}/projects/{p["id"]}" class="btn btn-ghost btn-icon">→</a></td></tr>'
         for p in projects)
 

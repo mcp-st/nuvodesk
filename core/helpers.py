@@ -41,6 +41,12 @@ def _fmt_size(b):
     if b < 1048576: return f"{b//1024} KB"
     return f"{b/1048576:.1f} MB"
 
+def _fd(d):
+    """Format ISO date YYYY-MM-DD → DD-MM-YYYY for display. Returns '—' if empty."""
+    if not d or len(d) < 10:
+        return d or '—'
+    return f"{d[8:10]}-{d[5:7]}-{d[:4]}"
+
 def _fmt_duration(secs):
     if not secs or secs < 0: return "0h 00m"
     return f"{int(secs//3600)}h {int((secs%3600)//60):02d}m"

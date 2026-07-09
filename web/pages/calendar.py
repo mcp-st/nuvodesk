@@ -2,7 +2,7 @@
 import json, calendar as _cal
 from datetime import datetime, date as _date, timedelta
 from core.db import BP, q, q1, rs, r2d
-from core.helpers import _esc, _pcolor
+from core.helpers import _esc, _pcolor, _fd
 from web.layout import _shell
 
 _MONTH_NAMES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
@@ -107,7 +107,7 @@ def _pending_cr_panel(user):
             f'<div style="flex:1;min-width:180px">'
             f'<div style="font-weight:700;font-size:.85rem">{_esc(cr["uname"])}'
             f' · <a href="{BP}/calendar/{cr["activity_date"]}" style="color:var(--primary)">'
-            f'{cr["activity_date"]}</a></div>'
+            f'{_fd(cr["activity_date"])}</a></div>'
             f'<div style="font-size:.75rem;color:var(--muted)">'
             f'{type_lbl.get(cr["type"],cr["type"])} · {_esc(cr["pname"])} · {time_str}</div>'
             f'<div style="font-size:.8rem;margin-top:4px;font-style:italic">{_esc(cr["message"])}</div>'
@@ -215,7 +215,7 @@ function doCreateActivity(){{
   var d={{
     user_id:document.getElementById('{pfx}-user').value,
     project_id:document.getElementById('{pfx}-proj').value,
-    activity_date:document.getElementById('{pfx}-date').value,
+    activity_date:getDateVal('{pfx}-date'),
     type:document.getElementById('{pfx}-type').value,
     all_day:allday?1:0,
     hour_start:allday?null:parseInt(document.getElementById('{pfx}-hs').value),
@@ -594,7 +594,7 @@ function switchTab(t){{
   document.getElementById('tab-reg').classList.toggle('active',t==='reg');
 }}
 function openLogModal(uid,date){{
-  document.getElementById('lm-date').value=date;
+  setDateVal('lm-date',date);
   var sel=document.getElementById('lm-user');
   for(var i=0;i<sel.options.length;i++){{if(sel.options[i].value==uid){{sel.selectedIndex=i;break;}}}}
   document.getElementById('log-modal').classList.add('open');
@@ -603,7 +603,7 @@ function doCreateLog(){{
   var d={{
     user_id:document.getElementById('lm-user').value,
     project_id:document.getElementById('lm-proj').value,
-    log_date:document.getElementById('lm-date').value,
+    log_date:getDateVal('lm-date'),
     hours:parseFloat(document.getElementById('lm-hours').value),
     description:document.getElementById('lm-desc').value
   }};
@@ -976,7 +976,7 @@ function doDayLog(){{
   var d={{
     user_id:document.getElementById('ld-user').value,
     project_id:document.getElementById('ld-proj').value,
-    log_date:document.getElementById('ld-date').value,
+    log_date:getDateVal('ld-date'),
     hours:parseFloat(document.getElementById('ld-hours').value),
     description:document.getElementById('ld-desc').value
   }};

@@ -2,7 +2,7 @@
 import json
 from datetime import date as _date
 from core.db import BP, q, q1, rs
-from core.helpers import _esc, _badge2, _pbadge, _empty_state
+from core.helpers import _esc, _badge2, _pbadge, _empty_state, _fd
 from web.layout import _shell
 
 
@@ -44,7 +44,7 @@ def _field_page(user):
         cl_html = (f'<span class="muted" style="font-size:.82rem">☑ {int(cl_done)}/{cl_total}</span>'
                    if cl_total else "")
         due_html = (f'<span style="font-size:.8rem;color:{"var(--s-err)" if is_overdue else "var(--muted)"}">'
-                    f'🗓 {_esc(t["due_date"][:10])}</span>') if t.get("due_date") else ""
+                    f'🗓 {_fd(t["due_date"])}</span>') if t.get("due_date") else ""
         task_cards += f"""<div class="field-task-card" id="ftask-{t['id']}" style="{bg_style}{border_style}">
   <div class="ftask-top">
     <div>

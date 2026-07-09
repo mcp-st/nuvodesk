@@ -5,7 +5,7 @@ from core.db import PORT, BP, DATA_DIR, DB_PATH, FILES_DIR, q, q1, run, rs, r2d
 from core.helpers import (
     _hash, _esc, _jattr, _now, _fmt_size, _fmt_duration, _parse_multipart, _stock_move,
     PROJ_COLORS, _pcolor, STATUS_LABEL, STATUS_COLOR, PRIORITY_COLOR,
-    WORK_TYPES, _wt_badge, _badge, _pbadge, _badge2, _kpi_card,
+    WORK_TYPES, _wt_badge, _badge, _pbadge, _badge2, _kpi_card, _fd,
 )
 from web.layout import _shell
 
@@ -50,7 +50,7 @@ def _project_report(user, pid):
             desc_part = f'<br><small style="color:#64748b">{_esc(t["description"])}</small>' if t.get("description") else ""
             t_rows += (f'<tr><td>{_esc(t["title"])}{desc_part}</td>'
                 f'<td>{slbl}</td><td>{pril}</td>'
-                f'<td>{_esc((t["due_date"] or "—")[:10])}</td></tr>')
+                f'<td>{_fd(t.get("due_date") or "")}</td></tr>')
 
     m_rows = "".join(
         f'<tr><td><code>{_esc(a["mat_code"])}</code> {_esc(a["mat_name"])}</td>'
@@ -82,7 +82,7 @@ def _project_report(user, pid):
             ("Cliente",p.get("client","")),("Referencia",p.get("reference","")),
             ("Dirección",p.get("address","")),("Técnico",p.get("tech","")),
             ("Contacto obra",p.get("contact_name","")),("Teléfono",p.get("contact_phone","")),
-            ("Inicio",(p.get("start_date") or "")[:10]),("Límite",(p.get("due_date") or "")[:10]),
+            ("Inicio",_fd(p.get("start_date") or "")), ("Límite",_fd(p.get("due_date") or "")),
             ("Estado",st_label),("Prioridad",pri_label),
             ("Horas estimadas",f'{h_est}h' if h_est else ""),
             ("Tiempo total registrado", _fmt_duration(total_time_secs) if total_time_secs else "—"),
@@ -265,8 +265,8 @@ th{{text-align:left;padding:5px 8px;background:#f1f5f9;font-size:.8rem}}
   <span>Técnico</span><span>{_esc(p.get("tech","") or "—")}</span>
   <span>Contacto</span><span>{_esc(p.get("contact_name","") or "—")}{(" · " + _esc(p.get("contact_phone","") or "")) if p.get("contact_phone") else ""}</span>
   <span>Prioridad</span><span>{pri_label}</span>
-  <span>Fecha inicio</span><span>{_esc((p.get("start_date") or "—")[:10])}</span>
-  <span>Fecha límite</span><span>{_esc((p.get("due_date") or "—")[:10])}</span>
+  <span>Fecha inicio</span><span>{_fd(p.get("start_date") or "")}</span>
+  <span>Fecha límite</span><span>{_fd(p.get("due_date") or "")}</span>
 </div>
 <div class="kpi-row">
   <div class="kpi"><div class="v">{task_done}/{len(tasks)}</div><div class="l">Tareas completadas</div></div>
@@ -333,7 +333,7 @@ def _project_report_md(user, pid):
         ("Cliente", p.get("client","")), ("Referencia", p.get("reference","")),
         ("Dirección", p.get("address","")), ("Técnico responsable", p.get("tech","")),
         ("Contacto obra", p.get("contact_name","")), ("Teléfono", p.get("contact_phone","")),
-        ("Inicio", (p.get("start_date") or "")[:10]), ("Límite", (p.get("due_date") or "")[:10]),
+        ("Inicio", _fd(p.get("start_date") or "")), ("Límite", _fd(p.get("due_date") or "")),
         ("Estado", st_label),
         ("Horas estimadas", f"{h_est}h" if h_est else ""),
         ("Horas diario", f"{h_logged}h" + (f" → {ph_logged:.1f} person-horas" if ph_logged != h_logged else "")),
@@ -347,7 +347,7 @@ def _project_report_md(user, pid):
         lines.append(md_table(["Tarea","Estado","Prioridad","Vencimiento"],
             [(t['title'], STATUS_LABEL.get(t['status'],t['status']),
               {"low":"Baja","normal":"Normal","high":"Alta","urgent":"Urgente"}.get(t['priority'],''),
-              (t['due_date'] or '—')[:10]) for t in tasks]))
+              _fd(t.get('due_date') or '')) for t in tasks]))
     else:
         lines.append("_Sin tareas registradas._")
     if time_summary_r:
@@ -441,7 +441,7 @@ def _project_parte(user, pid):
         f'<td>{"✅ Llevado" if kr["status"]=="brought" else "☐ Pendiente"}</td></tr>'
         for kr in kit)
     log_rows = "".join(
-        f'<tr><td>{_esc((l["created_at"] or "")[:10])}</td>'
+        f'<tr><td>{_fd(l.get("created_at") or "")}</td>'
         f'<td>{_esc(l["uname"])}</td>'
         f'<td style="text-align:center">{l["hours"] or "—"}</td>'
         f'<td>{_esc(l["body"])}</td></tr>'
@@ -502,8 +502,8 @@ tr:nth-child(even) td{{background:#f8fafc}}
   <div class="meta-item"><label>Estado</label><span>{STATUS_LABEL.get(p["status"],p["status"])}</span></div>
   <div class="meta-item"><label>Dirección</label><span>{_esc(p.get("address") or "—")}</span></div>
   <div class="meta-item"><label>Contacto</label><span>{_esc(p.get("contact_name") or "—")}{(" · "+_esc(p["contact_phone"])) if p.get("contact_phone") else ""}</span></div>
-  <div class="meta-item"><label>Inicio</label><span>{_esc((p.get("start_date") or "—")[:10])}</span></div>
-  <div class="meta-item"><label>Cierre previsto</label><span>{_esc((p.get("due_date") or "—")[:10])}</span></div>
+  <div class="meta-item"><label>Inicio</label><span>{_fd(p.get("start_date") or "")}</span></div>
+  <div class="meta-item"><label>Cierre previsto</label><span>{_fd(p.get("due_date") or "")}</span></div>
   <div class="meta-item"><label>Horas registradas</label><span>{h_logged}h</span></div>
   <div class="meta-item"><label>Horas estimadas</label><span>{p.get("estimated_hours") or "—"}h</span></div>
 </div>

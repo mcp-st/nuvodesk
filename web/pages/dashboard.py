@@ -2,7 +2,7 @@
 from datetime import date as _date
 from core.db import BP, q, q1, rs, r2d
 from core.helpers import (
-    _esc, _badge2, _pbadge, _kpi_card, _triage_item,
+    _esc, _badge2, _pbadge, _kpi_card, _triage_item, _fd,
 )
 from web.layout import _shell
 
@@ -56,7 +56,7 @@ def _my_day(user):
         proj_rows += (f'<tr><td><a href="{BP}/projects/{p["id"]}" class="fw7">{_esc(p["name"])}</a>'
             f'<br><span class="muted" style="font-size:.75rem">{_esc(p["client"])}</span></td>'
             f'<td>{_pbadge(p["priority"])}</td>'
-            f'<td class="muted">{_esc((p["due_date"] or "—")[:10])}</td>'
+            f'<td class="muted">{_fd(p.get("due_date") or "")}</td>'
             f'<td style="min-width:90px"><div class="progress" style="display:inline-block;width:60px;vertical-align:middle">'
             f'<div class="progress-bar" style="width:{pct}%"></div></div>'
             f'<span class="muted" style="font-size:.72rem;margin-left:4px">{pct}%</span></td>'
@@ -68,7 +68,7 @@ def _my_day(user):
         task_rows += (f'<tr><td>{_badge2(t["status"])}</td>'
             f'<td class="fw7">{_esc(t["title"])}</td>'
             f'<td><a href="{BP}/projects/{t["pid"]}" style="color:var(--muted);font-size:.8rem">{_esc(t["pname"])}</a></td>'
-            f'<td{overdue_cls} class="muted" style="font-size:.8rem">{_esc((t["due_date"] or "—")[:10])}</td></tr>')
+            f'<td{overdue_cls} class="muted" style="font-size:.8rem">{_fd(t.get("due_date") or "")}</td></tr>')
 
     kpis = (
         '<div class="nd-kpi-strip" style="margin-bottom:16px">'
@@ -240,7 +240,7 @@ def _dashboard(user):
         dw_rows = "".join(
             f"<tr><td><a href='{BP}/projects/{p['id']}'>{_esc(p['name'])}</a>"
             f"<br><span class='muted' style='font-size:.75rem'>{_esc(p['client'])}</span></td>"
-            f"<td class='muted'>{_esc((p['due_date'] or '')[:10])}</td>"
+            f"<td class='muted'>{_fd(p.get('due_date') or '')}</td>"
             f"<td>{_pbadge(p['priority'])}</td>"
             f"<td class='muted col-m-hide'>{_esc(p['tech'] or '—')}</td></tr>"
             for p in due_week)
@@ -256,7 +256,7 @@ def _dashboard(user):
         f"<br><span class='muted' style='font-size:.75rem'>{_esc(p['client'])}</span></td>"
         f"<td>{_badge2(p['status'])}</td><td class='col-m-hide'>{_pbadge(p['priority'])}</td>"
         f"<td class='muted col-m-hide'>{_esc(p['tech'] or '—')}</td>"
-        f"<td class='muted col-m-hide'>{_esc((p['due_date'] or '—')[:10])}</td></tr>" for p in recent)
+        f"<td class='muted col-m-hide'>{_fd(p.get('due_date') or '')}</td></tr>" for p in recent)
 
     rp_html = f"""<div class="card">
   <div class="toolbar"><h2>Proyectos recientes</h2>
@@ -273,7 +273,7 @@ def _dashboard(user):
             f"<td><a href='{BP}/projects/{t['pid']}'>{_esc(t['pname'])}</a></td>"
             f"<td class='fw7'>{_esc(t['title'])}</td>"
             f"<td class='muted col-m-hide'>{_esc(t['tech'] or '—')}</td>"
-            f"<td class='muted col-m-hide'>{_esc((t['due_date'] or '—')[:10])}</td>"
+            f"<td class='muted col-m-hide'>{_fd(t.get('due_date') or '')}</td>"
             f"<td><button class='btn btn-ghost btn-sm' onclick='unblockTask({t['id']})'>▶ Desbloquear</button></td></tr>"
             for t in blocked_tasks)
         bt_html = f"""<div class="card" style="border-left:4px solid var(--s-err)">

@@ -5,7 +5,7 @@ from core.db import PORT, BP, DATA_DIR, DB_PATH, FILES_DIR, q, q1, run, rs, r2d
 from core.helpers import (
     _hash, _esc, _jattr, _now, _fmt_size, _fmt_duration, _parse_multipart, _stock_move,
     PROJ_COLORS, _pcolor, STATUS_LABEL, STATUS_COLOR,
-    WORK_TYPES, _wt_badge, _badge, _badge2, _pbadge, _empty_state,
+    WORK_TYPES, _wt_badge, _badge, _badge2, _pbadge, _empty_state, _fd,
 )
 from web.layout import _shell
 
@@ -73,7 +73,7 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
         bc = 'var(--s-err)' if is_crit else _border_color.get(p['status'], "#a8a29e")
         pc_color = _prog_color.get(p['status'], "#a8a29e")
         ref_chip = f'<span class="chip">#{_esc(p["reference"])}</span>' if p.get("reference") else ""
-        due_html = f'🗓 {_esc(p["due_date"][:10])}' if p.get("due_date") else ""
+        due_html = f'🗓 {_fd(p["due_date"])}' if p.get("due_date") else ""
         tech_html = f'👤 {_esc(p["tech"])}' if p.get("tech") else ""
         prog_html = ""
         if p["task_t"]:
@@ -127,7 +127,7 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
             f'{ref_html}<br><span class="muted" style="font-size:.75rem">{_esc(p["client"])}</span></td>'
             f'<td>{_badge2(p["status"])}</td><td class="col-m-hide">{_pbadge(p["priority"])}</td>'
             f'<td class="muted col-m-hide">{_esc(p["tech"] or "—")}</td>'
-            f'<td class="muted col-m-hide">{_esc((p["due_date"] or "—")[:10])}</td>'
+            f'<td class="muted col-m-hide">{_fd(p.get("due_date") or "")}</td>'
             f'<td class="col-m-hide">{prog}</td>'
             f'<td><button class="btn btn-ghost btn-icon" onclick="editProject({_jattr(safe_p2)})">✏️</button>'
             f'<button data-pid="{pid2}" data-pname="{_esc(p["name"])}" '
@@ -277,8 +277,8 @@ function openNewProject(){{
   document.getElementById('f-wtype').value='proyecto';
   document.getElementById('f-status').value='active';
   document.getElementById('f-priority').value='normal';
-  document.getElementById('f-start').value='';
-  document.getElementById('f-due').value='';
+  setDateVal('f-start','');
+  setDateVal('f-due','');
   document.getElementById('f-hours').value=0;
   document.getElementById('f-tech').value='';
   document.getElementById('proj-modal').classList.add('open');
@@ -296,8 +296,8 @@ function editProject(p){{
   document.getElementById('f-wtype').value=p.work_type||'proyecto';
   document.getElementById('f-status').value=p.status||'active';
   document.getElementById('f-priority').value=p.priority||'normal';
-  document.getElementById('f-start').value=p.start_date||'';
-  document.getElementById('f-due').value=p.due_date||'';
+  setDateVal('f-start',p.start_date||'');
+  setDateVal('f-due',p.due_date||'');
   document.getElementById('f-hours').value=p.estimated_hours||0;
   document.getElementById('f-tech').value=p.assigned_to||'';
   document.getElementById('proj-modal').classList.add('open');
@@ -327,8 +327,8 @@ document.getElementById('proj-form').onsubmit=function(e){{
     description:document.getElementById('f-desc').value,
     status:document.getElementById('f-status').value,
     priority:document.getElementById('f-priority').value,
-    start_date:document.getElementById('f-start').value,
-    due_date:document.getElementById('f-due').value,
+    start_date:getDateVal('f-start'),
+    due_date:getDateVal('f-due'),
     estimated_hours:parseFloat(document.getElementById('f-hours').value)||0,
     assigned_to:document.getElementById('f-tech').value||null}};
   fetch(id?bp+'/api/projects/'+id:bp+'/api/projects',
@@ -351,7 +351,7 @@ document.getElementById('proj-form').onsubmit=function(e){{
       document.getElementById('f-wtype').value='averia';
       document.getElementById('f-priority').value='urgent';
     }}
-    document.getElementById('f-start').value=today;
+    setDateVal('f-start',today);
     document.getElementById('f-name').focus();
     history.replaceState(null,'',window.location.pathname);
   }}
@@ -468,8 +468,8 @@ function openApplyTemplate(id,name,wtype){{
   document.getElementById('tpl-apply-title').textContent='Nuevo proyecto: '+name;
   document.getElementById('tpl-pname').value='';
   document.getElementById('tpl-pclient').value='';
-  document.getElementById('tpl-pstart').value='';
-  document.getElementById('tpl-pdue').value='';
+  setDateVal('tpl-pstart','');
+  setDateVal('tpl-pdue','');
   document.getElementById('tpl-apply-modal').classList.add('open');
 }}
 function doApplyTemplate(){{
@@ -480,8 +480,8 @@ function doApplyTemplate(){{
   fetch(bp+'/api/templates/'+id+'/apply',{{method:'POST',
     headers:{{'Content-Type':'application/json'}},
     body:JSON.stringify({{name:pname,client:pclient,
-      start_date:document.getElementById('tpl-pstart').value,
-      due_date:document.getElementById('tpl-pdue').value}})}})
+      start_date:getDateVal('tpl-pstart'),
+      due_date:getDateVal('tpl-pdue')}})}})
     .then(function(r){{return r.ok?r.json():r.json().then(function(j){{throw new Error(j.error||'Error');}});}})
     .then(function(j){{
       document.getElementById('tpl-apply-modal').classList.remove('open');
@@ -540,7 +540,7 @@ def _build_kanban(tasks, pid):
                            f'<div style="font-size:.7rem;color:var(--muted);margin-bottom:2px">'
                            f'Checklist {cl_done}/{cl_total}</div>'
                            f'<div class="progress"><div class="progress-bar" style="width:{cl_pct}%"></div></div></div>')
-            due_html   = f'<span style="font-size:.72rem;color:var(--muted)">🗓 {t["due_date"][:10]}</span>' if t.get('due_date') else ""
+            due_html   = f'<span style="font-size:.72rem;color:var(--muted)">🗓 {_fd(t["due_date"])}</span>' if t.get('due_date') else ""
             crit_cls   = ' nd-crit' if t['status'] == 'blocked' else ''
             photo_badge = (f'<span style="position:absolute;top:-2px;right:-2px;background:var(--brand);'
                            f'color:#fff;border-radius:50%;font-size:.55rem;width:14px;height:14px;'
@@ -604,7 +604,7 @@ def _build_file_grid(pfiles, pid):
             f'<button class="file-del" onclick="delFile({f["id"]})" title="Eliminar">✕</button>'
             f'<div class="file-info">'
             f'<div class="file-name" title="{_esc(f["original_name"])}">{_esc(f["original_name"])}</div>'
-            f'<div class="file-meta">{_fmt_size(f["size_bytes"])} · {_esc(f["created_at"][:10])}</div>'
+            f'<div class="file-meta">{_fmt_size(f["size_bytes"])} · {_fd(f["created_at"])}</div>'
             f'</div></div>')
     return cards
 

@@ -245,7 +245,7 @@ function renderCerts(certs){{
     return;
   }}
   el.innerHTML=certs.map(function(c){{
-    var exp=c.expires_date?'· Vence: '+c.expires_date:'';
+    var exp=c.expires_date?'· Vence: '+c.expires_date.slice(8,10)+'-'+c.expires_date.slice(5,7)+'-'+c.expires_date.slice(0,4):'';
     return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">'
       +'<div><div class="fw7">'+c.cert_name+'</div>'
       +(c.cert_code?'<span class="chip" style="font-size:.72rem">'+c.cert_code+'</span>':'')
@@ -265,8 +265,8 @@ document.getElementById('cert-form').onsubmit=function(e){{
   e.preventDefault();
   var d={{cert_name:document.getElementById('cert-name').value,
     cert_code:document.getElementById('cert-code').value,
-    issued_date:document.getElementById('cert-issued').value,
-    expires_date:document.getElementById('cert-expires').value}};
+    issued_date:getDateVal('cert-issued'),
+    expires_date:getDateVal('cert-expires')}};
   fetch(bp+'/api/users/'+_certUid+'/certifications',{{method:'POST',
     headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
     .then(function(r){{return r.json();}})
@@ -363,7 +363,8 @@ function renderVacations(rows){{
     var lbl=_VAC_LABEL[g.status]||g.status;
     var bg=_VAC_COLOR[g.status]||'#f1f5f9';
     var tc=_VAC_TC[g.status]||'#334155';
-    var dateStr=g.firstDate===g.lastDate?g.firstDate:g.firstDate+' → '+g.lastDate;
+    function _fmtD(s){{return s?s.slice(8,10)+'-'+s.slice(5,7)+'-'+s.slice(0,4):s;}}
+    var dateStr=g.firstDate===g.lastDate?_fmtD(g.firstDate):_fmtD(g.firstDate)+' → '+_fmtD(g.lastDate);
     var nts=g.notes?'<span class="muted" style="font-size:.75rem;margin-left:6px">'+g.notes+'</span>':'';
     return '<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">'
       +'<div style="display:flex;align-items:center;gap:8px">'
@@ -385,8 +386,8 @@ function delVacGroup(ids){{
 }}
 document.getElementById('vac-form').onsubmit=function(e){{
   e.preventDefault();
-  var from=document.getElementById('vac-from').value;
-  var to=document.getElementById('vac-to').value;
+  var from=getDateVal('vac-from');
+  var to=getDateVal('vac-to');
   if(!from||!to)return;
   if(to<from){{Toast.show('La fecha de fin debe ser posterior al inicio','err');return;}}
   var d={{user_id:_vacUid,date_from:from,date_to:to,

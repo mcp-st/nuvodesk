@@ -467,6 +467,80 @@ fetch(bp+'/api/notifications')
 
 <!-- Componentes DS v2: Toast, Modal, ConfirmDialog, Overflow, Ctrl+K -->
 <script>{_NEW_COMPONENTS_JS}</script>
+<!-- Mini date picker — Lun-Dom, DD-MM-YYYY -->
+<script>
+/* ── Mini date picker — Lun-Dom, DD-MM-YYYY ── */
+(function(){{
+  var MN=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  var DN=['Lu','Ma','Mi','Ju','Vi','Sá','Do'];
+  function _iso(d){{return d?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):''}}
+  function _dmy(d){{return d?String(d.getDate()).padStart(2,'0')+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+d.getFullYear():''}}
+  function _parse(s){{if(!s||s.length<10)return null;var p=s.split('-');return p[0].length===4?new Date(+p[0],+p[1]-1,+p[2]):null;}}
+  window.getDateVal=function(id){{var el=document.getElementById(id);if(!el)return '';return el.dataset.isoVal!==undefined?el.dataset.isoVal:el.value;}};
+  window.setDateVal=function(id,iso){{var el=document.getElementById(id);if(!el)return;var d=_parse(iso||'');el.dataset.isoVal=iso||'';el.value=d?_dmy(d):(iso||'');}};
+  function _render(inp,st){{
+    var pop=inp._pop;if(!pop)return;
+    var y=st.y,m=st.m,first=new Date(y,m,1),last=new Date(y,m+1,0).getDate(),sd=(first.getDay()+6)%7,tod=_iso(new Date());
+    var h='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
+      +'<button class="mc-p" style="border:1px solid var(--border,#ddd);background:none;border-radius:4px;cursor:pointer;padding:2px 8px;font-size:14px">&#8249;</button>'
+      +'<strong style="font-size:12px">'+MN[m]+' '+y+'</strong>'
+      +'<button class="mc-n" style="border:1px solid var(--border,#ddd);background:none;border-radius:4px;cursor:pointer;padding:2px 8px;font-size:14px">&#8250;</button>'
+      +'</div><div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center">';
+    DN.forEach(function(n){{h+='<div style="font-size:10px;font-weight:600;color:var(--muted,#888);padding:2px">'+n+'</div>';}});
+    for(var i=0;i<sd;i++)h+='<div></div>';
+    for(var d=1;d<=last;d++){{
+      var dt=new Date(y,m,d),iso=_iso(dt);
+      var sel=iso===st.sel,isToday=iso===tod;
+      h+='<div class="mc-d" data-d="'+iso+'" style="padding:5px 2px;border-radius:4px;cursor:pointer;font-size:12px;'
+        +(sel?'background:var(--primary,#3b82f6);color:#fff;':'')
+        +(isToday&&!sel?'font-weight:800;color:var(--primary,#3b82f6);':'')
+        +'">'+d+'</div>';
+    }}
+    h+='</div>';
+    pop.innerHTML=h;
+    pop.querySelector('.mc-p').onclick=function(e){{e.stopPropagation();st.m--;if(st.m<0){{st.m=11;st.y--;}}_render(inp,st);}};
+    pop.querySelector('.mc-n').onclick=function(e){{e.stopPropagation();st.m++;if(st.m>11){{st.m=0;st.y++;}}_render(inp,st);}};
+    pop.querySelectorAll('.mc-d').forEach(function(el){{
+      el.onmouseenter=function(){{if(el.dataset.d!==st.sel)el.style.background='rgba(0,0,0,.07)';}};
+      el.onmouseleave=function(){{if(el.dataset.d!==st.sel)el.style.background='';}};
+      el.onclick=function(ev){{
+        ev.stopPropagation();
+        st.sel=el.dataset.d;inp.dataset.isoVal=st.sel;
+        inp.value=_dmy(_parse(st.sel));
+        _closeAll();inp.dispatchEvent(new Event('change',{{bubbles:true}}));
+      }};
+    }});
+  }}
+  function _closeAll(){{document.querySelectorAll('._mc-pop').forEach(function(p){{p.style.display='none';}});}}
+  function _init(inp){{
+    if(inp._mcDone)return;inp._mcDone=true;
+    var orig=inp.value||'';var d0=_parse(orig);
+    inp.type='text';inp.readOnly=true;inp.style.cursor='pointer';
+    inp.dataset.isoVal=d0?_iso(d0):'';inp.value=d0?_dmy(d0):'';
+    var pop=document.createElement('div');
+    pop.className='_mc-pop';
+    pop.style.cssText='display:none;position:absolute;z-index:9999;background:var(--surface,#fff);border:1px solid var(--border,#ddd);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.2);padding:10px;min-width:228px;';
+    var par=inp.parentNode;if(getComputedStyle(par).position==='static')par.style.position='relative';
+    par.appendChild(pop);inp._pop=pop;
+    var st={{y:(d0||new Date()).getFullYear(),m:(d0||new Date()).getMonth(),sel:d0?_iso(d0):''}};
+    inp.onclick=function(ev){{
+      ev.stopPropagation();
+      if(pop.style.display==='block'){{pop.style.display='none';return;}}
+      _closeAll();var cur=_parse(inp.dataset.isoVal);if(cur){{st.y=cur.getFullYear();st.m=cur.getMonth();st.sel=_iso(cur);}}
+      _render(inp,st);pop.style.display='block';
+    }};
+  }}
+  document.addEventListener('click',_closeAll,true);
+  document.addEventListener('submit',function(e){{
+    e.target.querySelectorAll('input[type=text][data-isoVal]').forEach(function(inp){{
+      if(inp.name&&inp.dataset.isoVal!==undefined)inp.value=inp.dataset.isoVal;
+    }});
+  }});
+  function _initAll(){{document.querySelectorAll('input[type=date]').forEach(_init);}}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',_initAll);
+  else _initAll();
+}})();
+</script>
 </body>
 </html>"""
 
