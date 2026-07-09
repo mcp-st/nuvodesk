@@ -44,7 +44,7 @@ def _avail_picker_html(uid, d_str, status, is_admin, compact=True):
     return (f'<div class="avp" style="position:relative;display:inline-block">'
             f'<button class="avp-btn" onclick="toggleAvp(this)" style="{badge}" title="{label}">'
             f'{icon}{text}</button>'
-            f'<div class="avp-menu" style="display:none;position:absolute;z-index:300;bottom:110%;left:0;'
+            f'<div class="avp-menu" style="display:none;position:fixed;z-index:9999;top:0;left:0;'
             f'background:var(--surface,#fff);border:1px solid var(--border);border-radius:8px;'
             f'padding:5px;gap:3px;flex-direction:column;min-width:130px;'
             f'box-shadow:0 4px 16px rgba(0,0,0,.18)">{opts}</div></div>')
@@ -56,7 +56,16 @@ def _avail_cr_js():
 function toggleAvp(btn){
   document.querySelectorAll('.avp-menu').forEach(function(m){m.style.display='none';});
   var m=btn.nextElementSibling;
-  m.style.display=(m.style.display==='flex'?'none':'flex');
+  if(m.style.display==='flex'){m.style.display='none';return;}
+  var r=btn.getBoundingClientRect();
+  m.style.position='fixed';
+  m.style.zIndex='9999';
+  m.style.top=(r.bottom+4)+'px';
+  var left=r.left;
+  if(left+160>window.innerWidth)left=window.innerWidth-164;
+  m.style.left=left+'px';
+  m.style.bottom='auto';
+  m.style.display='flex';
 }
 function setAvail(uid,date,status){
   fetch(bp+'/api/tech_availability',{method:'POST',
