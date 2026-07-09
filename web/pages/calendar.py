@@ -241,6 +241,76 @@ function doCreateActivity(){{
 }}"""
 
 
+# ── Sidebar helpers ────────────────────────────────────────────────────────────
+
+def _mini_cal_html(year, month, today, bp):
+    """Grid HTML for the sidebar mini-calendar."""
+    first = _date(year, month, 1)
+    _, dim = _cal.monthrange(year, month)
+    start_dow = first.weekday()  # 0=Mon
+    prev_y, prev_m = (year, month-1) if month > 1 else (year-1, 12)
+    next_y, next_m = (year, month+1) if month < 12 else (year+1, 1)
+    html = (f'<div class="mc-nav">'
+            f'<a href="{bp}/calendar?year={prev_y}&month={prev_m}" class="mc-arr">‹</a>'
+            f'<div class="mc-title">{_MONTH_NAMES[month-1]} {year}</div>'
+            f'<a href="{bp}/calendar?year={next_y}&month={next_m}" class="mc-arr">›</a>'
+            f'</div><div class="mc-g">')
+    for d in _DOW_SHORT:
+        html += f'<div class="mc-dh">{d}</div>'
+    for _ in range(start_dow):
+        html += '<div class="mc-d mc-oth"></div>'
+    for day in range(1, dim + 1):
+        d = _date(year, month, day)
+        d_str = str(d)
+        cls = "mc-d mc-tod" if d == today else "mc-d"
+        html += f'<a href="{bp}/calendar/{d_str}" class="{cls}">{day}</a>'
+    html += '</div>'
+    return html
+
+
+def _right_panel(user, year, month, today, is_admin):
+    """240px right sidebar: mini-cal + team today + legend."""
+    mini = _mini_cal_html(year, month, today, BP)
+
+    today_str = str(today)
+    t_avail = _avail_map([today_str])
+    techs = _load_techs()
+
+    tech_rows = ""
+    for t in techs:
+        status = t_avail.get((t["id"], today_str), "available")
+        color  = _AVAIL_COLOR.get(status, "#16a34a")
+        initials = "".join(w[0].upper() for w in t["display_name"].split()[:2])
+        tc = _pcolor(t["id"])
+        avp = _avail_picker_html(t["id"], today_str, status, is_admin, compact=True)
+        tech_rows += (f'<div class="ts-item">'
+                      f'<div class="avatar avatar-sm" style="background:{tc}">{_esc(initials)}</div>'
+                      f'<div class="ts-name">{_esc(t["display_name"].split()[0])}</div>'
+                      f'{avp}</div>')
+
+    legend_act = "".join(
+        f'<div class="leg-row"><div class="leg-dot" style="background:{c}"></div>{_esc(l)}</div>'
+        for c, l in [("#3b82f6","⚡ Presencial"),("#8b5cf6","🌐 Online"),
+                     ("#dc2626","👥 Reunión"),("#f97316","✈️ Viaje"),("#64748b","📌 Otro")])
+    legend_avail = "".join(
+        f'<div class="leg-row"><div class="leg-dot round" style="background:{_AVAIL_COLOR[s]}"></div>{_AVAIL_LABEL[s]}</div>'
+        for s in ("available","remote","traveling","vacation","day_off","sick","off"))
+
+    return f"""<div class="cal-sidebar">
+  <div class="mini-cal">{mini}</div>
+  <div>
+    <div class="cal-sb-title">Equipo hoy</div>
+    {tech_rows}
+  </div>
+  <div style="margin-top:auto">
+    <div class="cal-sb-title">Tipos de actividad</div>
+    {legend_act}
+    <div class="cal-sb-title" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">Disponibilidad</div>
+    {legend_avail}
+  </div>
+</div>"""
+
+
 # ── Month view ─────────────────────────────────────────────────────────────────
 
 def _calendar_page(user, year, month):
@@ -248,129 +318,118 @@ def _calendar_page(user, year, month):
     if month < 1:  year -= 1; month = 12
     if month > 12: year += 1; month = 1
     first = _date(year, month, 1)
-    _, days_in_month = _cal.monthrange(year, month)
+    _, dim = _cal.monthrange(year, month)
     prev_y, prev_m = (year, month-1) if month > 1 else (year-1, 12)
     next_y, next_m = (year, month+1) if month < 12 else (year+1, 1)
 
     d1 = f"{year:04d}-{month:02d}-01"
-    d2 = f"{year:04d}-{month:02d}-{days_in_month:02d}"
+    d2 = f"{year:04d}-{month:02d}-{dim:02d}"
 
     activities = rs(q("""SELECT a.*,u.display_name uname,p.name pname
         FROM activities a JOIN users u ON u.id=a.user_id JOIN projects p ON p.id=a.project_id
         WHERE a.activity_date BETWEEN ? AND ?
         ORDER BY a.activity_date,a.hour_start""", (d1, d2)))
 
-    date_list = [str(first + timedelta(days=i)) for i in range(days_in_month)]
-    techs = _load_techs()
+    date_list = [str(first + timedelta(days=i)) for i in range(dim)]
     avail = _avail_map(date_list)
+    techs = _load_techs()
 
-    act_map = {d: [] for d in date_list}
+    act_map = {}
     for a in activities:
-        if a["activity_date"] in act_map:
-            act_map[a["activity_date"]].append(a)
+        act_map.setdefault(a["activity_date"], []).append(a)
 
-    pending_cr = {r["activity_id"] for r in
-                  rs(q("SELECT activity_id FROM change_requests WHERE status='pending'"))}
-
+    pending_cr = {r["activity_id"] for r in rs(q("SELECT activity_id FROM change_requests WHERE status='pending'"))}
     is_admin = user.get("role") == "admin"
 
-    day_headers = "".join(
-        f'<th class="{"today-col" if str(first+timedelta(days=i))==str(today) else ""}">'
-        f'<a href="{BP}/calendar/{str(first+timedelta(days=i))}" style="color:inherit;text-decoration:none">'
-        f'{(first+timedelta(days=i)).day}</a></th>'
-        for i in range(days_in_month))
+    # Grid starts on the Monday of the week containing the 1st
+    grid_start = first - timedelta(days=first.weekday())
 
-    matrix_rows = ""
-    for t in techs:
-        if user.get("role") not in ("admin","backoffice") and t["id"] != user.get("id"):
-            continue
-        initials = "".join(w[0].upper() for w in t["display_name"].split()[:2])
-        col = _pcolor(t["id"])
-        row_cells = (f'<td><div class="avatar avatar-sm" style="background:{col};margin:0 auto 3px">'
-                     f'{_esc(initials)}</div>'
-                     f'<div style="font-size:.65rem;white-space:nowrap">'
-                     f'{_esc(t["display_name"].split()[0])}</div></td>')
-        for i in range(days_in_month):
-            d_str = str(first + timedelta(days=i))
-            is_tc = (first + timedelta(days=i) == today)
-            td_cls = ' class="today-col"' if is_tc else ""
-            status = avail.get((t["id"], d_str), "available")
-            _bg_val = _AVAIL_BG.get(status, "")
-            bg = f"background:{_bg_val}" if _bg_val else ""
-            day_acts = [a for a in act_map.get(d_str, []) if a["user_id"] == t["id"]]
-            chips = ""
-            for a in day_acts[:2]:
-                pcol = _pcolor(a["project_id"])
-                icon = _TYPE_ICON.get(a["type"], "📌")
-                warn = " ⚠️" if a["id"] in pending_cr else ""
-                chips += (f'<span title="{_esc(a["pname"])}" '
-                          f'style="display:block;font-size:.6rem;background:{pcol};color:#fff;'
-                          f'border-radius:3px;padding:1px 3px;margin-bottom:1px;overflow:hidden;'
-                          f'white-space:nowrap;text-overflow:ellipsis">'
-                          f'{icon}{warn} {_esc(a["pname"][:10])}</span>')
-            if len(day_acts) > 2:
-                chips += f'<span style="font-size:.6rem;color:var(--muted)">+{len(day_acts)-2}</span>'
-            hrs_day = sum(
-                (a["hour_end"] - a["hour_start"])
-                for a in day_acts
-                if not a["all_day"] and a["hour_start"] is not None and a["hour_end"] is not None)
-            hrs_txt = (f'<span style="font-size:.55rem;color:var(--muted);display:block;'
-                       f'text-align:right">{hrs_day}h</span>') if hrs_day else ""
-            avp = _avail_picker_html(t["id"], d_str, status, is_admin, compact=True)
-            row_cells += (f'<td{td_cls}>'
-                          f'<a href="{BP}/calendar/{d_str}" '
-                          f'style="display:block;min-height:28px;padding:2px;{bg};text-decoration:none;color:inherit">'
-                          f'{chips}{hrs_txt}</a>'
-                          f'<div style="text-align:right;padding:0 2px 2px">{avp}</div>'
-                          f'</td>')
-        matrix_rows += f"<tr>{row_cells}</tr>"
+    dow_headers = "".join(
+        f'<div class="cal-dow" style="{"color:var(--warn,#f59e0b)" if i >= 5 else ""}">{d}</div>'
+        for i, d in enumerate(_DOW_SHORT))
+
+    # Generate 6 rows × 7 cols = 42 cells
+    cells_html = ""
+    cur = grid_start
+    for _ in range(42):
+        d_str = str(cur)
+        in_m     = (cur.month == month)
+        is_tod   = (cur == today)
+        is_wkend = (cur.weekday() >= 5)
+
+        cls = "cal-cell"
+        if not in_m:          cls += " other-m"
+        if is_tod:             cls += " today-c"
+        if is_wkend and in_m: cls += " wkend"
+
+        dn_html = f'<div class="cal-dn">{cur.day}</div>'
+
+        # Availability dots (only for days in month)
+        dots = ""
+        if in_m:
+            avail_count = 0
+            for t in techs:
+                st = avail.get((t["id"], d_str), "available")
+                if st in ("available", ""):
+                    avail_count += 1
+                else:
+                    col = _AVAIL_COLOR.get(st, "#16a34a")
+                    dots += f'<div class="cal-adot" style="background:{col}" title="{_esc(t["display_name"])}: {_AVAIL_LABEL.get(st,st)}"></div>'
+            if avail_count:
+                dots += f'<div class="cal-adot" style="background:#16a34a" title="{avail_count} disponible{"s" if avail_count!=1 else ""}"></div>'
+        dots_html = f'<div class="cal-adots">{dots}</div>' if dots else ""
+
+        # Activity chips
+        day_acts = act_map.get(d_str, []) if in_m else []
+        chips = ""
+        for a in day_acts[:2]:
+            col  = _pcolor(a["project_id"])
+            icon = _TYPE_ICON.get(a["type"], "📌")
+            warn = " ⚠️" if a["id"] in pending_cr else ""
+            chips += (f'<div class="cal-chip" style="background:{col}" '
+                      f'title="{_esc(a["pname"])} — {_esc(a["uname"])}">'
+                      f'{icon}{warn} {_esc(a["pname"][:13])}</div>')
+        if len(day_acts) > 2:
+            chips += f'<div class="cal-more">+{len(day_acts)-2} más</div>'
+
+        cells_html += (f'<a href="{BP}/calendar/{d_str}" class="{cls}">'
+                       f'{dn_html}{dots_html}{chips}</a>')
+        cur += timedelta(days=1)
 
     today_monday = str(today - timedelta(days=today.weekday()))
-    add_btn = (f'<button class="btn btn-primary" onclick="document.getElementById(\'act-modal\').classList.add(\'open\')">'
-               f'+ Actividad</button>') if is_admin else ""
+    add_btn  = (f'<button class="btn btn-primary" onclick="document.getElementById(\'act-modal\').classList.add(\'open\')">'
+                f'+ Actividad</button>') if is_admin else ""
     act_modal = _activity_modal(str(today)) if is_admin else ""
     act_js    = _activity_js() if is_admin else ""
+    cr_panel  = _pending_cr_panel(user)
+    right     = _right_panel(user, year, month, today, is_admin)
 
-    no_rows = '<tr><td colspan="32" style="text-align:center;padding:24px;color:var(--muted)">Sin actividades este mes</td></tr>'
-    cr_panel = _pending_cr_panel(user)
     content = f"""
 {cr_panel}
-<div class="toolbar">
-  <h1>🗓 Calendario</h1>
-  <div style="display:flex;gap:8px;align-items:center">
-    <a href="{BP}/calendar?view=week&week_start={today_monday}" class="btn btn-ghost btn-sm">Vista semana</a>
-    {add_btn}
+<div class="cal-layout">
+  <div class="cal-main-area">
+    <div class="toolbar" style="margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:6px">
+        <a href="{BP}/calendar?view=week&week_start={today_monday}" class="btn btn-ghost btn-sm">Vista semana</a>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <a href="{BP}/calendar?year={prev_y}&month={prev_m}" class="btn btn-ghost btn-sm">‹</a>
+        <h2 style="margin:0;font-size:1rem;min-width:145px;text-align:center">{_MONTH_NAMES[month-1]} {year}</h2>
+        <a href="{BP}/calendar?year={next_y}&month={next_m}" class="btn btn-ghost btn-sm">›</a>
+        <a href="{BP}/calendar?year={today.year}&month={today.month}" class="btn btn-ghost btn-sm">Hoy</a>
+      </div>
+      {add_btn}
+    </div>
+    <div class="cal-grid-wrap">
+      <div class="cal-grid">
+        {dow_headers}
+        {cells_html}
+      </div>
+    </div>
   </div>
+  {right}
 </div>
-
-<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
-  <div style="display:flex;align-items:center;gap:10px">
-    <a href="{BP}/calendar?year={prev_y}&month={prev_m}" class="btn btn-ghost btn-sm">← {_MONTH_NAMES[prev_m-1]}</a>
-    <h2 style="margin:0;min-width:160px;text-align:center">{_MONTH_NAMES[month-1]} {year}</h2>
-    <a href="{BP}/calendar?year={next_y}&month={next_m}" class="btn btn-ghost btn-sm">{_MONTH_NAMES[next_m-1]} →</a>
-  </div>
-  <a href="{BP}/calendar?year={today.year}&month={today.month}" class="btn btn-ghost btn-sm">Hoy</a>
-</div>
-
-<div class="card" style="padding:0;overflow:hidden">
-  <div style="overflow-x:auto">
-  <table class="matrix">
-    <thead><tr><th class="tech-col">Técnico</th>{day_headers}</tr></thead>
-    <tbody>{matrix_rows if matrix_rows else no_rows}</tbody>
-  </table>
-  </div>
-</div>
-
-<div style="margin-top:10px;font-size:.75rem;color:var(--muted)">
-  ⚡ Presencial &nbsp; 🌐 Online &nbsp; 👥 Reunión &nbsp; ✈️ Viaje &nbsp; 📌 Otro &nbsp;|&nbsp;
-  ⚠️ Solicitud pendiente &nbsp;|&nbsp; fondo rayado = desplazado · gris = libre &nbsp;
-  <span style="background:#dbeafe;border-radius:3px;padding:1px 5px">🏖 Vacaciones</span> &nbsp;
-  <span style="background:#ede9fe;border-radius:3px;padding:1px 5px">📅 Día libre</span> &nbsp;
-  <span style="background:#fee2e2;border-radius:3px;padding:1px 5px">🤒 Baja</span>
-</div>
-
 {act_modal}
-
 <script>
 var bp={json.dumps(BP)};
 {act_js}
@@ -392,244 +451,114 @@ def _calendar_week(user, week_start_str):
     prev_ws = str(ws - timedelta(days=7))
     next_ws = str(ws + timedelta(days=7))
     this_ws = str(today - timedelta(days=today.weekday()))
-    days = [ws + timedelta(days=i) for i in range(7)]
-    day_strs = [str(d) for d in days]
+    days    = [ws + timedelta(days=i) for i in range(7)]
+    day_strs= [str(d) for d in days]
     week_label = f"{_MONTH_NAMES[ws.month-1]} {ws.day} – {_MONTH_NAMES[we.month-1]} {we.day}, {we.year}"
 
-    techs  = _load_techs()
-    projs  = _load_projs()
-    avail  = _avail_map(day_strs)
-    is_admin = user.get("role") == "admin"
+    techs   = _load_techs()
+    avail   = _avail_map(day_strs)
+    is_admin= user.get("role") == "admin"
 
     acts = rs(q("""SELECT a.*,u.display_name uname,p.name pname
         FROM activities a JOIN users u ON u.id=a.user_id JOIN projects p ON p.id=a.project_id
         WHERE a.activity_date BETWEEN ? AND ?
         ORDER BY a.activity_date,a.hour_start""", (str(ws), str(we))))
 
-    wlogs = rs(q("""SELECT wl.*,u.display_name uname,p.name pname
-        FROM work_logs wl JOIN users u ON u.id=wl.user_id JOIN projects p ON p.id=wl.project_id
-        WHERE wl.log_date BETWEEN ? AND ?
-        ORDER BY wl.log_date""", (str(ws), str(we))))
-
     act_map = {}
     for a in acts:
         act_map.setdefault((a["user_id"], a["activity_date"]), []).append(a)
 
-    log_map = {}
-    for wl in wlogs:
-        log_map.setdefault((wl["user_id"], wl["log_date"]), []).append(wl)
+    # Build column count: 1 (tech name) + 7 days
+    col_tmpl = "110px " + " ".join(["1fr"] * 7)
 
-    def _day_th(d):
-        is_tc = (d == today)
-        sty = ' style="background:color-mix(in srgb,var(--primary) 12%,transparent)"' if is_tc else ""
-        return (f'<th{sty}>'
-                f'<div style="font-weight:700">{_DOW_SHORT[d.weekday()]}</div>'
-                f'<div style="font-size:.75rem">'
-                f'<a href="{BP}/calendar/{d}" style="color:inherit">{d.day}/{d.month}</a>'
-                f'</div></th>')
+    # Day headers row
+    def _wsl_day_th(d):
+        is_tc   = (d == today)
+        is_wknd = (d.weekday() >= 5)
+        num_style = "color:var(--muted)"
+        if is_wknd: num_style += ";color:var(--warn,#f59e0b)"
+        num_html = (f'<div class="wsl-today-num">{d.day}</div>' if is_tc
+                    else f'<div class="wsl-date" style="{num_style}">{d.day}</div>')
+        return (f'<div class="wsl-head">'
+                f'<div class="wsl-dow">{_DOW_SHORT[d.weekday()]}</div>'
+                f'{num_html}</div>')
 
-    day_ths = "".join(_day_th(d) for d in days)
+    day_headers = (f'<div class="wsl-head" style="min-width:110px;text-align:left;padding-left:8px">'
+                   f'<a href="{BP}/calendar?year={ws.year}&month={ws.month}" '
+                   f'style="font-size:10px;color:var(--muted)">← Mes</a></div>'
+                   + "".join(_wsl_day_th(d) for d in days))
 
-    def _act_cell(uid, d_str):
-        acts_cell = act_map.get((uid, d_str), [])
-        status = avail.get((uid, d_str), "available")
-        bg = ""
-        if status == "off":
-            bg = "background:var(--border)"
-        elif status == "traveling":
-            bg = "background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(255,165,0,.15) 3px,rgba(255,165,0,.15) 6px)"
-        inner = ""
-        hrs_plan = 0
-        for a in acts_cell:
-            if not a["all_day"] and a["hour_start"] is not None and a["hour_end"] is not None:
-                hrs_plan += (a["hour_end"] - a["hour_start"])
-            col = _pcolor(a["project_id"])
-            icon = _TYPE_ICON.get(a["type"], "📌")
-            hs = a.get("hour_start") or 0
-            he = a.get("hour_end") or 0
-            inner += (f'<div style="font-size:.65rem;background:{col};color:#fff;border-radius:3px;'
-                      f'padding:2px 4px;margin-bottom:2px;white-space:nowrap;overflow:hidden;'
-                      f'text-overflow:ellipsis" title="{_esc(a["pname"])} · {hs:02d}:00–{he:02d}:00">'
-                      f'{icon} {_esc(a["pname"][:14])}</div>')
-        if hrs_plan:
-            pct = min(100, int(hrs_plan / 8 * 100))
-            bar_col = "#ef4444" if pct >= 100 else "#f59e0b" if pct >= 75 else "#22c55e"
-            inner += (f'<div style="font-size:.6rem;color:var(--muted);text-align:right;margin-top:2px">'
-                      f'{hrs_plan}h / 8h</div>'
-                      f'<div style="height:4px;background:var(--border);border-radius:2px;margin-top:2px">'
-                      f'<div style="height:100%;width:{pct}%;background:{bar_col};border-radius:2px"></div>'
-                      f'</div>')
-        avp = _avail_picker_html(uid, d_str, status, is_admin, compact=True)
-        inner += f'<div style="text-align:right;margin-top:3px">{avp}</div>'
-        return f'<td style="vertical-align:top;padding:4px;min-width:90px;{bg}">{inner}</td>'
+    # Tech rows
+    rows_html = ""
+    visible_techs = [t for t in techs
+                     if user.get("role") in ("admin","backoffice") or t["id"] == user.get("id")]
 
-    def _log_cell(uid, d_str):
-        logs_cell = log_map.get((uid, d_str), [])
-        hrs = sum(l["hours"] for l in logs_cell)
-        inner = ""
-        for l in logs_cell:
-            col = _pcolor(l["project_id"])
-            inner += (f'<div style="font-size:.65rem;background:{col};color:#fff;border-radius:3px;'
-                      f'padding:2px 4px;margin-bottom:2px;white-space:nowrap;overflow:hidden;'
-                      f'text-overflow:ellipsis" title="{_esc(l["pname"])}: {l["hours"]}h">'
-                      f'{l["hours"]}h {_esc(l["pname"][:10])}'
-                      f'<button onclick="delWorkLog({l["id"]})" style="float:right;background:none;'
-                      f'border:none;color:#fff;cursor:pointer;padding:0 2px;font-size:.7rem">✕</button>'
-                      f'</div>')
-        uid_js = json.dumps(uid)
-        date_js = json.dumps(d_str)
-        add_btn_html = (f'<button onclick="openLogModal({uid_js},{date_js})" '
-                        f'style="width:100%;font-size:.6rem;padding:2px;margin-top:2px;background:none;'
-                        f'border:1px dashed var(--border);border-radius:3px;cursor:pointer;'
-                        f'color:var(--muted)">+ horas</button>')
-        if hrs:
-            inner += f'<div style="font-size:.6rem;font-weight:700;text-align:right">{hrs}h total</div>'
-        return f'<td style="vertical-align:top;padding:4px">{inner}{add_btn_html}</td>'
-
-    plan_rows = ""
-    log_rows  = ""
-    plan_totals = {d: 0 for d in day_strs}
-    log_totals  = {d: 0.0 for d in day_strs}
-
-    for t in techs:
-        if user.get("role") not in ("admin","backoffice") and t["id"] != user.get("id"):
-            continue
+    for t in visible_techs:
         initials = "".join(w[0].upper() for w in t["display_name"].split()[:2])
-        col = _pcolor(t["id"])
-        th_cell = (f'<td style="white-space:nowrap">'
-                   f'<div class="avatar avatar-sm" style="background:{col};display:inline-flex;margin-right:4px">'
-                   f'{_esc(initials)}</div>'
-                   f'<span style="font-size:.75rem">{_esc(t["display_name"])}</span></td>')
-        plan_row = th_cell
-        log_row  = th_cell
+        tc = _pcolor(t["id"])
+        # Tech name cell
+        row = (f'<div class="wsl-tech">'
+               f'<div class="avatar avatar-sm" style="background:{tc}">{_esc(initials)}</div>'
+               f'<div class="wsl-tname">{_esc(t["display_name"])}</div>'
+               f'</div>')
+        # Day cells
         for d_str in day_strs:
-            plan_row += _act_cell(t["id"], d_str)
-            log_row  += _log_cell(t["id"], d_str)
-            plan_totals[d_str] += sum(
-                (a["hour_end"] - a["hour_start"])
-                for a in act_map.get((t["id"], d_str), [])
-                if not a["all_day"] and a["hour_end"] and a["hour_start"])
-            log_totals[d_str] += sum(l["hours"] for l in log_map.get((t["id"], d_str), []))
-        plan_rows += f"<tr>{plan_row}</tr>"
-        log_rows  += f"<tr>{log_row}</tr>"
+            status = avail.get((t["id"], d_str), "available")
+            bg_cls = {"vacation":"vac-bg","day_off":"vac-bg","off":"off-bg",
+                      "sick":"off-bg","traveling":"trav-bg"}.get(status, "")
+            cell_inner = ""
+            for a in act_map.get((t["id"], d_str), []):
+                col  = _pcolor(a["project_id"])
+                icon = _TYPE_ICON.get(a["type"], "📌")
+                hs   = a.get("hour_start") or 0
+                he   = a.get("hour_end") or 0
+                time_lbl = f"{hs:02d}–{he:02d}" if not a["all_day"] and hs else ""
+                cell_inner += (f'<span class="wsl-event" style="background:{col}" '
+                               f'title="{_esc(a["pname"])} · {_esc(a["uname"])} · {time_lbl}">'
+                               f'{icon} {_esc(a["pname"][:14])}'
+                               f'{(" "+time_lbl) if time_lbl else ""}</span>')
+            avp = _avail_picker_html(t["id"], d_str, status, is_admin, compact=True)
+            cell_inner += f'<div style="text-align:right;margin-top:2px">{avp}</div>'
+            row += f'<div class="wsl-cell {bg_cls}">{cell_inner}</div>'
+        rows_html += row
 
-    plan_foot = "<td><strong>Total</strong></td>" + "".join(
-        f'<td style="text-align:center;font-size:.75rem;font-weight:700">{plan_totals[d]}h</td>'
-        for d in day_strs)
-    log_foot = "<td><strong>Total</strong></td>" + "".join(
-        f'<td style="text-align:center;font-size:.75rem;font-weight:700">{round(log_totals[d],1)}h</td>'
-        for d in day_strs)
-
-    def _table(tbody, tfoot):
-        if not tbody:
-            return '<p class="muted" style="text-align:center;padding:24px">Sin datos esta semana</p>'
-        return (f'<div style="overflow-x:auto"><table class="matrix" style="min-width:600px">'
-                f'<thead><tr><th style="min-width:120px">Técnico</th>{day_ths}</tr></thead>'
-                f'<tbody>{tbody}</tbody>'
-                f'<tfoot><tr style="background:var(--surface)">{tfoot}</tr></tfoot>'
-                f'</table></div>')
-
-    user_opts_wk = _user_options()
-    proj_opts_wk = _proj_options()
-    this_week_link = (f'<a href="{BP}/calendar?view=week&week_start={this_ws}" class="btn btn-ghost btn-sm">'
-                      f'Esta semana</a>') if str(ws) != this_ws else ""
-
-    add_act_btn = (f'<button class="btn btn-primary" onclick="document.getElementById(\'act-modal\').classList.add(\'open\')">'
-                   f'+ Actividad</button>') if is_admin else ""
+    this_week_link = (f'<a href="{BP}/calendar?view=week&week_start={this_ws}" class="btn btn-ghost btn-sm">Esta semana</a>'
+                      ) if str(ws) != this_ws else ""
+    add_btn  = (f'<button class="btn btn-primary" onclick="document.getElementById(\'act-modal\').classList.add(\'open\')">'
+                f'+ Actividad</button>') if is_admin else ""
     act_modal = _activity_modal(str(today)) if is_admin else ""
     act_js    = _activity_js() if is_admin else ""
     cr_panel  = _pending_cr_panel(user)
+    right     = _right_panel(user, ws.year, ws.month, today, is_admin)
 
     content = f"""
 {cr_panel}
-<div class="toolbar">
-  <h1>🗓 Semana</h1>
-  <div style="display:flex;gap:8px">
-    <a href="{BP}/calendar?year={ws.year}&month={ws.month}" class="btn btn-ghost btn-sm">Vista mes</a>
-    {add_act_btn}
+<div class="cal-layout">
+  <div class="cal-main-area">
+    <div class="toolbar" style="margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <a href="{BP}/calendar?year={ws.year}&month={ws.month}" class="btn btn-ghost btn-sm">Vista mes</a>
+        <a href="{BP}/calendar?view=week&week_start={prev_ws}" class="btn btn-ghost btn-sm">‹</a>
+        <span style="font-weight:600;font-size:.88rem;white-space:nowrap">{week_label}</span>
+        <a href="{BP}/calendar?view=week&week_start={next_ws}" class="btn btn-ghost btn-sm">›</a>
+        {this_week_link}
+      </div>
+      {add_btn}
+    </div>
+    <div class="week-sl" style="grid-template-columns:{col_tmpl}">
+      {day_headers}
+      {rows_html}
+    </div>
   </div>
+  {right}
 </div>
-
-<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
-  <a href="{BP}/calendar?view=week&week_start={prev_ws}" class="btn btn-ghost btn-sm">← Semana anterior</a>
-  <span style="font-weight:700;flex:1;text-align:center">{week_label}</span>
-  <a href="{BP}/calendar?view=week&week_start={next_ws}" class="btn btn-ghost btn-sm">Semana siguiente →</a>
-  {this_week_link}
-</div>
-
-<div class="tabs" style="margin-bottom:12px">
-  <button class="tab-btn active" id="tab-plan" onclick="switchTab('plan')">📅 Planificado</button>
-  <button class="tab-btn" id="tab-reg" onclick="switchTab('reg')">🕐 Registrado</button>
-</div>
-
-<div id="view-plan">
-  <div class="card" style="padding:0">{_table(plan_rows, plan_foot)}</div>
-</div>
-<div id="view-reg" style="display:none">
-  <div class="card" style="padding:0">{_table(log_rows, log_foot)}</div>
-</div>
-
 {act_modal}
-
-<!-- MODAL registrar horas -->
-<div class="modal-bg" id="log-modal">
-<div class="modal" style="max-width:460px">
-  <h2>Registrar horas</h2>
-  <div class="form-row">
-    <div><label>Técnico</label><select id="lm-user">{user_opts_wk}</select></div>
-    <div><label>Proyecto</label><select id="lm-proj">{proj_opts_wk}</select></div>
-  </div>
-  <div class="form-row">
-    <div><label>Fecha</label><input type="date" id="lm-date"></div>
-    <div><label>Horas</label><input type="number" id="lm-hours" min="0.25" max="24" step="0.25" value="1"></div>
-  </div>
-  <div class="form-row single"><div><label>Descripción</label>
-    <input id="lm-desc" placeholder="Qué se hizo..."></div></div>
-  <div class="modal-foot">
-    <button type="button" class="btn btn-ghost"
-      onclick="document.getElementById('log-modal').classList.remove('open')">Cancelar</button>
-    <button class="btn btn-primary" onclick="doCreateLog()">Guardar</button>
-  </div>
-</div></div>
-
 <script>
 var bp={json.dumps(BP)};
 {act_js}
-document.getElementById('log-modal').onclick=function(e){{if(e.target===this)this.classList.remove('open');}};
-function switchTab(t){{
-  document.getElementById('view-plan').style.display=t==='plan'?'':'none';
-  document.getElementById('view-reg').style.display=t==='reg'?'':'none';
-  document.getElementById('tab-plan').classList.toggle('active',t==='plan');
-  document.getElementById('tab-reg').classList.toggle('active',t==='reg');
-}}
-function openLogModal(uid,date){{
-  setDateVal('lm-date',date);
-  var sel=document.getElementById('lm-user');
-  for(var i=0;i<sel.options.length;i++){{if(sel.options[i].value==uid){{sel.selectedIndex=i;break;}}}}
-  document.getElementById('log-modal').classList.add('open');
-}}
-function doCreateLog(){{
-  var d={{
-    user_id:document.getElementById('lm-user').value,
-    project_id:document.getElementById('lm-proj').value,
-    log_date:getDateVal('lm-date'),
-    hours:parseFloat(document.getElementById('lm-hours').value),
-    description:document.getElementById('lm-desc').value
-  }};
-  fetch(bp+'/api/work_logs',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
-    .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}});}})
-    .then(function(res){{if(!res.ok){{Toast.show(res.j.error||'Error','err');return;}}location.reload();}});
-}}
-function delWorkLog(id){{
-  ConfirmDialog.show('¿Eliminar este registro de horas?','')
-    .then(function(ok){{
-      if(!ok)return;
-      fetch(bp+'/api/work_logs/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
-    }});
-}}
 {_avail_cr_js()}
 </script>"""
-    return _shell("calendar", user, content, title="Calendario")
+    return _shell("calendar", user, content, title="Calendario — Semana")
 
 
 # ── Day view ───────────────────────────────────────────────────────────────────
@@ -849,6 +778,7 @@ def _calendar_day(user, day_str):
 </div></div>"""
 
     cr_panel  = _pending_cr_panel(user)
+    right     = _right_panel(user, day.year, day.month, today, is_admin)
     log_modal_day = f"""
 <div class="modal-bg" id="log-modal-day">
 <div class="modal" style="max-width:460px">
@@ -875,38 +805,43 @@ def _calendar_day(user, day_str):
 
     content = f"""
 {cr_panel}
-<div class="day-nav">
-  <a href="{BP}/calendar/{prev_day}" class="btn btn-ghost btn-sm">← {prev_day}</a>
-  <div style="flex:1;text-align:center">
-    <h1 style="margin:0">{day_label}</h1>
-    <a href="{BP}/calendar?year={day.year}&month={day.month}" class="muted" style="font-size:.8rem">← Volver al mes</a>
-  </div>
-  <a href="{BP}/calendar/{next_day}" class="btn btn-ghost btn-sm">{next_day} →</a>
-</div>
+<div class="cal-layout">
+  <div class="cal-main-area" style="overflow-y:auto">
+    <div class="day-nav">
+      <a href="{BP}/calendar/{prev_day}" class="btn btn-ghost btn-sm">← {prev_day}</a>
+      <div style="flex:1;text-align:center">
+        <h1 style="margin:0">{day_label}</h1>
+        <a href="{BP}/calendar?year={day.year}&month={day.month}" class="muted" style="font-size:.8rem">← Volver al mes</a>
+      </div>
+      <a href="{BP}/calendar/{next_day}" class="btn btn-ghost btn-sm">{next_day} →</a>
+    </div>
 
-<div style="display:grid;grid-template-columns:1fr 280px;gap:18px;align-items:start">
+    <div style="display:grid;grid-template-columns:1fr 280px;gap:18px;align-items:start">
 
-<div class="card" style="padding:0;overflow:hidden">
-  <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-    <h2 style="margin:0">Horario</h2>
-    <div style="display:flex;gap:8px">{add_btn_day} {add_log_btn_day}</div>
-  </div>
-  <div style="overflow-x:auto">
-  <table class="day-matrix">
-    <thead><tr><th class="hour-col">Hora</th>{th_techs}</tr></thead>
-    <tbody>{rows_html}</tbody>
-  </table>
-  </div>
-</div>
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <h2 style="margin:0">Horario</h2>
+        <div style="display:flex;gap:8px">{add_btn_day} {add_log_btn_day}</div>
+      </div>
+      <div style="overflow-x:auto">
+      <table class="day-matrix">
+        <thead><tr><th class="hour-col">Hora</th>{th_techs}</tr></thead>
+        <tbody>{rows_html}</tbody>
+      </table>
+      </div>
+    </div>
 
-<div>
-  <div class="card">
-    <h2>Resumen del día</h2>
-    {slot_list}
-    {add_sidebar}
-  </div>
-</div>
+    <div>
+      <div class="card">
+        <h2>Resumen del día</h2>
+        {slot_list}
+        {add_sidebar}
+      </div>
+    </div>
 
+    </div>
+  </div>
+  {right}
 </div>
 
 {slot_modal_html}
