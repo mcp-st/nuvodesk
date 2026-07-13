@@ -311,7 +311,78 @@ def _right_panel(user, year, month, today, is_admin):
 </div>"""
 
 
-# ── Month view ─────────────────────────────────────────────────────────────────
+# ── Month view (calp — productivity redesign) ──────────────────────────────────
+
+# Colores rotativos para técnicos (índice en lista ordenada)
+_TECH_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#a78bfa", "#ec4899", "#06b6d4"]
+
+# Mapeo tipo de actividad → emoji
+_TYPE_EMOJI = {
+    "physical": "🔧",
+    "online":   "🌐",
+    "meeting":  "👥",
+    "travel":   "✈️",
+    "other":    "📌",
+}
+
+# Colores de tipo de actividad para dots en panel de detalle
+_TYPE_DOT_COLOR = {
+    "physical": "#3b82f6",
+    "online":   "#8b5cf6",
+    "meeting":  "#dc2626",
+    "travel":   "#d97706",
+    "other":    "#64748b",
+}
+
+_DOW_NAMES_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+_MONTH_NAMES_ES = _MONTH_NAMES  # alias
+
+# Icono overlay según disponibilidad
+_AVAIL_ICON_OVERLAY = {
+    "available": "✓",
+    "remote":    "✓",
+    "off":       "–",
+    "day_off":   "–",
+    "sick":      "✕",
+    "vacation":  "✈",
+    "traveling": "⊙",
+}
+
+# Label corto para tooltip de avatar
+_AVAIL_LABEL_SHORT = {
+    "available": "Disponible",
+    "remote":    "Remoto",
+    "off":       "Sin asignar",
+    "day_off":   "Día libre",
+    "sick":      "Baja médica",
+    "vacation":  "Vacaciones",
+    "traveling": "Desplazado",
+}
+
+
+def _tech_initials(name: str) -> str:
+    parts = name.split()
+    if len(parts) >= 2:
+        return (parts[0][0] + parts[1][0]).upper()
+    return name[:2].upper()
+
+
+def _heat_level(act_count: int) -> int:
+    if act_count == 0: return 0
+    if act_count <= 2: return 1
+    if act_count <= 4: return 2
+    if act_count <= 6: return 3
+    if act_count <= 8: return 4
+    return 5
+
+
+def _occ_info(active_count: int, total: int):
+    if total == 0:
+        return 0, "low"
+    pct = round((active_count / total) * 100)
+    level = "low" if pct < 40 else ("medium" if pct < 75 else "high")
+    return pct, level
+
 
 def _calendar_page(user, year, month):
     today = _date.today()
@@ -325,116 +396,770 @@ def _calendar_page(user, year, month):
     d1 = f"{year:04d}-{month:02d}-01"
     d2 = f"{year:04d}-{month:02d}-{dim:02d}"
 
+    # Cargar técnicos activos con show_in_planning
+    techs = _load_techs()
+
+    # Asignar colores rotativos por índice
+    tech_color = {t["id"]: _TECH_COLORS[i % len(_TECH_COLORS)] for i, t in enumerate(techs)}
+
+    # Cargar actividades del mes
     activities = rs(q("""SELECT a.*,u.display_name uname,p.name pname
         FROM activities a JOIN users u ON u.id=a.user_id JOIN projects p ON p.id=a.project_id
         WHERE a.activity_date BETWEEN ? AND ?
         ORDER BY a.activity_date,a.hour_start""", (d1, d2)))
 
+    # act_map: {(user_id, date_str): [activity, ...]}
+    act_map: dict = {}
+    for a in activities:
+        act_map.setdefault((a["user_id"], a["activity_date"]), []).append(a)
+
+    # Disponibilidad del mes
     date_list = [str(first + timedelta(days=i)) for i in range(dim)]
     avail = _avail_map(date_list)
-    techs = _load_techs()
 
-    act_map = {}
-    for a in activities:
-        act_map.setdefault(a["activity_date"], []).append(a)
-
-    pending_cr = {r["activity_id"] for r in rs(q("SELECT activity_id FROM change_requests WHERE status='pending'"))}
     is_admin = user.get("role") == "admin"
+    today_monday = str(today - timedelta(days=today.weekday()))
+    cr_panel = _pending_cr_panel(user)
 
-    # Grid starts on the Monday of the week containing the 1st
+    # ── Estadísticas del mes ──────────────────────────────────────────
+    month_stats = {"assigned": 0, "available_days": 0, "vacation_days": 0,
+                   "sick_days": 0}
+
+    # ── Grid mensual ──────────────────────────────────────────────────
     grid_start = first - timedelta(days=first.weekday())
-
-    dow_headers = "".join(
-        f'<div class="cal-dow" style="{"color:var(--warn,#f59e0b)" if i >= 5 else ""}">{d}</div>'
-        for i, d in enumerate(_DOW_SHORT))
-
-    # Generate 6 rows × 7 cols = 42 cells
     cells_html = ""
     cur = grid_start
+
+    # JSON de datos por día para el panel de detalle (JS)
+    # Estructura: {day_num: {techs:[{id,name,initials,color,avail,acts:[]}], acts:[{type,pname,uname,desc}]}}
+    day_data: dict = {}
+
     for _ in range(42):
         d_str = str(cur)
         in_m     = (cur.month == month)
         is_tod   = (cur == today)
         is_wkend = (cur.weekday() >= 5)
 
-        cls = "cal-cell"
-        if not in_m:          cls += " other-m"
-        if is_tod:             cls += " today-c"
-        if is_wkend and in_m: cls += " wkend"
+        if not in_m:
+            cells_html += (
+                f'<div class="calp-day-cell other-month">'
+                f'<div class="calp-day-top">'
+                f'<span class="calp-day-num">{cur.day}</span>'
+                f'</div></div>'
+            )
+            cur += timedelta(days=1)
+            continue
 
-        dn_html = f'<div class="cal-dn">{cur.day}</div>'
+        # Recopilar datos de técnicos para este día
+        day_tech_data = []
+        day_acts_all = []
+        act_count_total = 0
+        active_tech_count = 0  # técnicos con actividad
 
-        # Availability dots (only for days in month)
-        dots = ""
-        if in_m:
-            avail_count = 0
-            for t in techs:
-                st = avail.get((t["id"], d_str), "available")
-                if st in ("available", ""):
-                    avail_count += 1
-                else:
-                    col = _AVAIL_COLOR.get(st, "#16a34a")
-                    dots += f'<div class="cal-adot" style="background:{col}" title="{_esc(t["display_name"])}: {_AVAIL_LABEL.get(st,st)}"></div>'
-            if avail_count:
-                dots += f'<div class="cal-adot" style="background:#16a34a" title="{avail_count} disponible{"s" if avail_count!=1 else ""}"></div>'
-        dots_html = f'<div class="cal-adots">{dots}</div>' if dots else ""
+        for t in techs:
+            tid = t["id"]
+            avail_status = avail.get((tid, d_str), "available")
+            day_acts_tech = act_map.get((tid, d_str), [])
+            has_act = bool(day_acts_tech) and not is_wkend
+            if has_act:
+                active_tech_count += 1
+                act_count_total += len(day_acts_tech)
+                # Estadísticas mensuales
+                month_stats["assigned"] += len(day_acts_tech)
+            elif not is_wkend:
+                if avail_status == "vacation":
+                    month_stats["vacation_days"] += 1
+                elif avail_status == "sick":
+                    month_stats["sick_days"] += 1
+                elif avail_status == "available":
+                    month_stats["available_days"] += 1
+            day_tech_data.append({
+                "id": tid,
+                "name": t["display_name"],
+                "initials": _tech_initials(t["display_name"]),
+                "color": tech_color[tid],
+                "avail": avail_status,
+                "acts": [{"type": a.get("type","other"),
+                           "pname": a["pname"],
+                           "uname": a["uname"],
+                           "all_day": a.get("all_day",0),
+                           "hour_start": a.get("hour_start"),
+                           "hour_end": a.get("hour_end")} for a in day_acts_tech]
+            })
+            for a in day_acts_tech:
+                day_acts_all.append({
+                    "type": a.get("type","other"),
+                    "pname": a["pname"],
+                    "uname": a["uname"],
+                    "tech_name": t["display_name"],
+                })
 
-        # Activity chips
-        day_acts = act_map.get(d_str, []) if in_m else []
-        chips = ""
-        for a in day_acts[:2]:
-            col  = _pcolor(a["project_id"])
-            icon = _TYPE_ICON.get(a["type"], "📌")
-            warn = " ⚠️" if a["id"] in pending_cr else ""
-            chips += (f'<div class="cal-chip" style="background:{col}" '
-                      f'title="{_esc(a["pname"])} — {_esc(a["uname"])}">'
-                      f'{icon}{warn} {_esc(a["pname"][:13])}</div>')
-        if len(day_acts) > 2:
-            chips += f'<div class="cal-more">+{len(day_acts)-2} más</div>'
+        day_data[cur.day] = {"techs": day_tech_data, "acts": day_acts_all}
 
-        cells_html += (f'<a href="{BP}/calendar/{d_str}" class="{cls}">'
-                       f'{dn_html}{dots_html}{chips}</a>')
+        heat = _heat_level(act_count_total) if not is_wkend else 0
+        pct, occ_level = _occ_info(active_tech_count, len(techs)) if not is_wkend else (0, "low")
+
+        today_cls   = " today"   if is_tod   else ""
+        weekend_cls = " weekend" if is_wkend else ""
+
+        # Número del día
+        day_num_html = f'<span class="calp-day-num">{cur.day}</span>'
+
+        # Badge de actividades
+        if act_count_total == 0:
+            badge_cls = "calp-act-badge zero"
+            badge_txt = "·"
+        else:
+            badge_cls = "calp-act-badge"
+            badge_txt = str(act_count_total)
+        badge_html = f'<span class="{badge_cls}">{badge_txt}</span>'
+
+        # Fila de avatares (máx 4 técnicos; si hay más, mostrar "+N")
+        avatars_html = '<div class="calp-avatar-row">'
+        visible_techs_av = day_tech_data[:4]
+        for td in visible_techs_av:
+            icon = _AVAIL_ICON_OVERLAY.get(td["avail"], "✓")
+            label = _AVAIL_LABEL_SHORT.get(td["avail"], "Disponible")
+            acts_count = len(td["acts"])
+            tip = f'{_esc(td["name"])} | {_esc(label)} | {acts_count} act.'
+            avatars_html += (
+                f'<div class="calp-avatar" data-avail="{_esc(td["avail"])}" '
+                f'data-icon="{_esc(icon)}" '
+                f'data-tech-name="{_esc(td["name"])}" '
+                f'data-tech-avail="{_esc(label)}" '
+                f'data-tech-acts="{acts_count}" '
+                f'style="background:{td["color"]}">'
+                f'{_esc(td["initials"])}</div>'
+            )
+        if len(day_tech_data) > 4:
+            extra = len(day_tech_data) - 4
+            avatars_html += (
+                f'<div class="calp-avatar" style="background:var(--muted);font-size:.55rem">'
+                f'+{extra}</div>'
+            )
+        avatars_html += '</div>'
+
+        # Chips de actividad (máx 3 visibles)
+        chips_html = '<div class="calp-chips">'
+        shown_acts = day_acts_all[:3]
+        for act in shown_acts:
+            atype = act["type"]
+            emoji = _TYPE_EMOJI.get(atype, "📌")
+            dot_color = _TYPE_DOT_COLOR.get(atype, "#64748b")
+            short_name = act["pname"][:18] if act["pname"] else ""
+            chips_html += (
+                f'<div class="calp-chip {_esc(atype)}">'
+                f'<div class="calp-chip-dot" style="background:{dot_color}"></div>'
+                f'{emoji} {_esc(short_name)}'
+                f'</div>'
+            )
+        if len(day_acts_all) > 3:
+            extra_acts = len(day_acts_all) - 3
+            chips_html += f'<div class="calp-chip more">+{extra_acts} más</div>'
+        chips_html += '</div>'
+
+        # Barra de ocupación
+        occ_bar_html = ""
+        if not is_wkend:
+            occ_bar_html = (
+                f'<div class="calp-occ-bar-wrap">'
+                f'<div class="calp-occ-bar-track">'
+                f'<div class="calp-occ-bar-fill {occ_level}" style="width:{pct}%"></div>'
+                f'</div></div>'
+            )
+
+        cells_html += (
+            f'<div class="calp-day-cell{today_cls}{weekend_cls}" '
+            f'data-day="{cur.day}" data-dstr="{d_str}" data-heat="{heat}" '
+            f'data-dow="{cur.weekday()}">'
+            f'<div class="calp-day-top">'
+            f'{day_num_html}{badge_html}'
+            f'</div>'
+            f'{avatars_html}'
+            f'{chips_html if not is_wkend else ""}'
+            f'{occ_bar_html}'
+            f'</div>'
+        )
         cur += timedelta(days=1)
 
-    today_monday = str(today - timedelta(days=today.weekday()))
-    add_btn  = (f'<button class="btn btn-primary" onclick="document.getElementById(\'act-modal\').classList.add(\'open\')">'
-                f'+ Actividad</button>') if is_admin else ""
-    act_modal = _activity_modal(str(today)) if is_admin else ""
-    act_js    = _activity_js() if is_admin else ""
-    cr_panel  = _pending_cr_panel(user)
-    right     = _right_panel(user, year, month, today, is_admin)
+    # ── DOW headers ───────────────────────────────────────────────────
+    dow_headers_html = ""
+    for i, d in enumerate(_DOW_SHORT):
+        wknd_cls = ' weekend' if i >= 5 else ''
+        dow_headers_html += f'<div class="calp-dow-cell{wknd_cls}">{d}</div>'
+
+    # ── Sidebar: mini-calendario ──────────────────────────────────────
+    mini_grid_html = ""
+    mini_start = first - timedelta(days=first.weekday())
+    mini_cur = mini_start
+    for _ in range(42):
+        if mini_cur.month != month:
+            mini_grid_html += f'<div class="calp-mini-day other">{mini_cur.day}</div>'
+        else:
+            is_tod_m = (mini_cur == today)
+            is_wknd_m = (mini_cur.weekday() >= 5)
+            cls = "calp-mini-day"
+            if is_tod_m:    cls += " today"
+            elif is_wknd_m: cls += " weekend"
+            mini_grid_html += f'<div class="{cls}" data-day="{mini_cur.day}">{mini_cur.day}</div>'
+        mini_cur += timedelta(days=1)
+
+    # ── Sidebar: equipo hoy ───────────────────────────────────────────
+    today_str = str(today)
+    today_avail = _avail_map([today_str])
+    team_today_html = ""
+    for t in techs:
+        col = tech_color[t["id"]]
+        init = _tech_initials(t["display_name"])
+        avail_status = today_avail.get((t["id"], today_str), "available")
+        day_acts_today = act_map.get((t["id"], today_str), [])
+        has_act_today = bool(day_acts_today)
+        if has_act_today:
+            dot_cls, status_label = "busy", "Asignado"
+        elif avail_status == "available":
+            dot_cls, status_label = "online", "Disponible"
+        elif avail_status == "vacation":
+            dot_cls, status_label = "offline", "Vacaciones"
+        elif avail_status == "sick":
+            dot_cls, status_label = "offline", "Baja"
+        elif avail_status == "traveling":
+            dot_cls, status_label = "busy", "Desplazado"
+        else:
+            dot_cls, status_label = "offline", _AVAIL_LABEL_SHORT.get(avail_status, "Libre")
+        avp = _avail_picker_html(t["id"], today_str, avail_status, is_admin, compact=True)
+        team_today_html += (
+            f'<div class="calp-team-member">'
+            f'<div class="calp-member-avatar" style="background:{col}">{_esc(init)}</div>'
+            f'<div class="calp-member-info">'
+            f'<div class="calp-member-name">{_esc(t["display_name"])}</div>'
+            f'<div class="calp-member-role">{_esc(status_label)}</div>'
+            f'</div>'
+            f'{avp}'
+            f'<div class="calp-member-dot {dot_cls}"></div>'
+            f'</div>'
+        )
+
+    # ── Sidebar: 4 tarjetas de estadísticas ──────────────────────────
+    # Calcular ocupación media del mes
+    occ_vals = []
+    for d_num in range(1, dim + 1):
+        d_s = f"{year:04d}-{month:02d}-{d_num:02d}"
+        d_date = _date(year, month, d_num)
+        if d_date.weekday() >= 5:
+            continue
+        active = sum(1 for t in techs if act_map.get((t["id"], d_s)))
+        if active > 0 or True:  # include all weekdays
+            if len(techs) > 0:
+                occ_vals.append(round((active / len(techs)) * 100))
+    occ_media = round(sum(occ_vals) / len(occ_vals)) if occ_vals else 0
+    inc_count = sum(1 for a in activities if a.get("type") == "meeting")  # reuniones como proxy
+
+    stats_cards_html = (
+        f'<div class="calp-stats-wrap">'
+        f'<div class="calp-stat-card">'
+        f'<div class="calp-stat-val" style="color:var(--primary)">{month_stats["assigned"]}</div>'
+        f'<div class="calp-stat-lbl">Actividades del mes</div>'
+        f'</div>'
+        f'<div class="calp-stat-card">'
+        f'<div class="calp-stat-val" style="color:#f59e0b">{occ_media}%</div>'
+        f'<div class="calp-stat-lbl">Ocupación media</div>'
+        f'</div>'
+        f'<div class="calp-stat-card">'
+        f'<div class="calp-stat-val" style="color:#6366f1">{month_stats["vacation_days"]}</div>'
+        f'<div class="calp-stat-lbl">Días vacaciones</div>'
+        f'</div>'
+        f'<div class="calp-stat-card">'
+        f'<div class="calp-stat-val" style="color:#f43f5e">{month_stats["sick_days"]}</div>'
+        f'<div class="calp-stat-lbl">Días de baja</div>'
+        f'</div>'
+        f'</div>'
+    )
+
+    # ── Botón nueva asignación ────────────────────────────────────────
+    add_btn_html = ""
+    act_modal_html = ""
+    act_js_str = ""
+    if is_admin:
+        add_btn_html = (
+            f'<button class="calp-btn-pri" '
+            f'onclick="document.getElementById(\'act-modal\').classList.add(\'open\')">'
+            f'<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor">'
+            f'<path d="M8 2a.5.5 0 01.5.5v5h5a.5.5 0 010 1h-5v5a.5.5 0 01-1 0v-5h-5a.5.5 0 010-1h5v-5A.5.5 0 018 2z"/>'
+            f'</svg> Nueva asignación</button>'
+        )
+        act_modal_html = _activity_modal(str(today))
+        act_js_str = _activity_js()
+
+    # ── JSON de datos por día (para el panel de detalle en JS) ────────
+    day_data_json = json.dumps(day_data, ensure_ascii=False)
+
+    # ── Mobile calendar: mini-grid ────────────────────────────────────
+    mob_grid_cells = ""
+    mob_start = first - timedelta(days=first.weekday())
+    mob_cur = mob_start
+    for _ in range(42):
+        mob_in_m   = (mob_cur.month == month)
+        mob_is_tod = (mob_cur == today)
+        if not mob_in_m:
+            mob_grid_cells += (
+                f'<div class="mob-cal-cell other-month">'
+                f'<span class="mob-cal-dn">{mob_cur.day}</span>'
+                f'</div>'
+            )
+        else:
+            mob_d_str = str(mob_cur)
+            mob_today_cls = " today" if mob_is_tod else ""
+            # Collect up to 3 unique tech colors with activity that day
+            mob_dots_html = '<div class="mob-cal-dots">'
+            mob_dots_shown = 0
+            for t in techs:
+                if mob_dots_shown >= 3:
+                    break
+                if act_map.get((t["id"], mob_d_str)):
+                    mob_dots_html += (
+                        f'<span class="mob-cal-dot" '
+                        f'style="background:{tech_color[t["id"]]}"></span>'
+                    )
+                    mob_dots_shown += 1
+            mob_dots_html += '</div>'
+            mob_grid_cells += (
+                f'<div class="mob-cal-cell{mob_today_cls}" '
+                f'data-day="{mob_cur.day}" '
+                f'onclick="mobCalSelect(this,{mob_cur.day})">'
+                f'<span class="mob-cal-dn">{mob_cur.day}</span>'
+                f'{mob_dots_html if mob_dots_shown else ""}'
+                f'</div>'
+            )
+        mob_cur += timedelta(days=1)
+
+    # ── Mobile calendar: initial day panel (today if in month, else day 1) ──
+    if today.year == year and today.month == month:
+        mob_initial_day = today.day
+    else:
+        mob_initial_day = 1
+    mob_initial_dow = _date(year, month, mob_initial_day).weekday()
+    _DOW_ES_LONG = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
+    mob_initial_title = (
+        f'{_DOW_ES_LONG[mob_initial_dow]}, {mob_initial_day} de '
+        f'{_MONTH_NAMES_ES[month-1]} {year}'
+    )
+    mob_initial_data = day_data.get(mob_initial_day, {})
+    mob_initial_acts = mob_initial_data.get("acts", [])
+    mob_day_panel_html = f'<div class="mob-cal-day-title">{mob_initial_title}</div>'
+    if mob_initial_acts:
+        for mob_act in mob_initial_acts:
+            mob_acolor = _TYPE_DOT_COLOR.get(mob_act.get("type", "other"), "#64748b")
+            mob_day_panel_html += (
+                f'<div class="mob-cal-event">'
+                f'<div class="mob-cal-event-stripe" style="background:{mob_acolor}"></div>'
+                f'<div class="mob-cal-event-body">'
+                f'<div class="mob-cal-event-name">{_esc(mob_act.get("pname",""))}</div>'
+                f'<div class="mob-cal-event-tech">{_esc(mob_act.get("tech_name") or mob_act.get("uname",""))}</div>'
+                f'</div></div>'
+            )
+    else:
+        mob_day_panel_html += '<div class="mob-cal-empty">Sin actividades este día</div>'
+
+    # ── Mobile calendar: equipo hoy ──────────────────────────────────
+    mob_team_html = ""
+    _AVAIL_STATUS_CLASS = {
+        "available": "available", "remote": "available",
+        "vacation": "vacation", "day_off": "vacation",
+        "sick": "sick", "traveling": "traveling",
+        "off": "available",
+    }
+    _AVAIL_LABEL_MOB = {
+        "available": "Disponible", "remote": "Remoto",
+        "vacation": "Vacaciones", "day_off": "Día libre",
+        "sick": "Baja médica", "traveling": "Desplazado",
+        "off": "Libre",
+    }
+    for t in techs:
+        col = tech_color[t["id"]]
+        init = _tech_initials(t["display_name"])
+        avail_status = today_avail.get((t["id"], today_str), "available")
+        sc = _AVAIL_STATUS_CLASS.get(avail_status, "available")
+        slbl = _AVAIL_LABEL_MOB.get(avail_status, "Disponible")
+        mob_team_html += (
+            f'<div class="mob-cal-member">'
+            f'<div class="mob-cal-avatar" style="background:{col}">{_esc(init)}</div>'
+            f'<div class="mob-cal-member-info">'
+            f'<div class="mob-cal-member-name">{_esc(t["display_name"])}</div>'
+            f'<div class="mob-cal-member-status {sc}">{slbl}</div>'
+            f'</div></div>'
+        )
+
+    # ── HTML principal ─────────────────────────────────────────────────
+    month_title = (f'{_MONTH_NAMES_ES[month-1]} '
+                   f'<span style="font-weight:400;color:var(--muted)">{year}</span>')
 
     content = f"""
 {cr_panel}
-<div class="cal-layout">
-  <div class="cal-main-area">
-    <div class="toolbar" style="margin-bottom:10px">
-      <div style="display:flex;align-items:center;gap:6px">
-        <a href="{BP}/calendar?view=week&week_start={today_monday}" class="btn btn-ghost btn-sm">Vista semana</a>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px">
-        <a href="{BP}/calendar?year={prev_y}&month={prev_m}" class="btn btn-ghost btn-sm">‹</a>
-        <h2 style="margin:0;font-size:1rem;min-width:145px;text-align:center">{_MONTH_NAMES[month-1]} {year}</h2>
-        <a href="{BP}/calendar?year={next_y}&month={next_m}" class="btn btn-ghost btn-sm">›</a>
-        <a href="{BP}/calendar?year={today.year}&month={today.month}" class="btn btn-ghost btn-sm">Hoy</a>
-      </div>
-      {add_btn}
+
+<!-- ── Vista móvil ── -->
+<div class="mob-only mob-cal">
+  <div class="mob-cal-header">
+    <a href="{BP}/calendar?year={prev_y}&month={prev_m}" class="mob-cal-nav">&#8249;</a>
+    <h2 class="mob-cal-title">{_MONTH_NAMES_ES[month-1]} {year}</h2>
+    <a href="{BP}/calendar?year={next_y}&month={next_m}" class="mob-cal-nav">&#8250;</a>
+  </div>
+  <div class="mob-cal-grid">
+    <div class="mob-cal-dow">L</div>
+    <div class="mob-cal-dow">M</div>
+    <div class="mob-cal-dow">X</div>
+    <div class="mob-cal-dow">J</div>
+    <div class="mob-cal-dow">V</div>
+    <div class="mob-cal-dow">S</div>
+    <div class="mob-cal-dow">D</div>
+    {mob_grid_cells}
+  </div>
+  <div class="mob-cal-day-panel" id="mob-cal-day">
+    {mob_day_panel_html}
+  </div>
+  <div class="mob-cal-team">
+    <div class="mob-cal-section-title">Equipo hoy</div>
+    {mob_team_html}
+  </div>
+</div>
+
+<script>
+var MOB_CAL_DATA = {day_data_json};
+var MOB_CAL_MONTH = {month};
+var MOB_CAL_YEAR  = {year};
+var MOB_DOW_LONG  = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+var MOB_MONTHS    = {json.dumps(_MONTH_NAMES_ES, ensure_ascii=False)};
+var MOB_TYPE_COLOR= {{physical:'#3b82f6',online:'#8b5cf6',meeting:'#dc2626',travel:'#d97706',other:'#64748b'}};
+
+function mobCalSelect(cell, day) {{
+  document.querySelectorAll('.mob-cal-cell').forEach(function(c){{c.classList.remove('selected');}});
+  cell.classList.add('selected');
+  var d = new Date(MOB_CAL_YEAR, MOB_CAL_MONTH - 1, day);
+  var dow = d.getDay();  // 0=Sun
+  var dowIdx = dow === 0 ? 6 : dow - 1;  // convert to Mon=0
+  var dateTitle = MOB_DOW_LONG[dowIdx] + ', ' + day + ' de ' + MOB_MONTHS[MOB_CAL_MONTH - 1] + ' ' + MOB_CAL_YEAR;
+  var events = (MOB_CAL_DATA[day] || {{}}).acts || [];
+  var panel = document.getElementById('mob-cal-day');
+  var html = '<div class="mob-cal-day-title">' + dateTitle + '</div>';
+  if (events.length === 0) {{
+    html += '<div class="mob-cal-empty">Sin actividades este día</div>';
+  }} else {{
+    events.forEach(function(ev) {{
+      var color = MOB_TYPE_COLOR[ev.type] || '#64748b';
+      html += '<div class="mob-cal-event">' +
+        '<div class="mob-cal-event-stripe" style="background:' + color + '"></div>' +
+        '<div class="mob-cal-event-body">' +
+          '<div class="mob-cal-event-name">' + (ev.pname || '') + '</div>' +
+          '<div class="mob-cal-event-tech">' + (ev.tech_name || ev.uname || '') + '</div>' +
+        '</div></div>';
+    }});
+  }}
+  panel.innerHTML = html;
+}}
+
+// Mark initial selected cell
+(function() {{
+  var initial = {mob_initial_day};
+  document.querySelectorAll('.mob-cal-cell[data-day]').forEach(function(c) {{
+    if (parseInt(c.dataset.day) === initial) c.classList.add('selected');
+  }});
+}})();
+</script>
+
+<!-- ── Vista desktop ── -->
+<div class="desk-only">
+
+<div id="calp-tooltip" class="calp-tooltip">
+  <div class="calp-tooltip-name" id="calp-tt-name"></div>
+  <div class="calp-tooltip-row">
+    <span id="calp-tt-status" class="calp-tooltip-status"></span>
+    <span id="calp-tt-acts" style="font-size:.65rem"></span>
+  </div>
+</div>
+
+<div class="calp-shell">
+
+  <!-- Topbar -->
+  <div class="calp-topbar">
+    <div style="display:flex;align-items:center;gap:8px">
+      <a href="{BP}/calendar?year={prev_y}&month={prev_m}" class="calp-nav-btn" title="Mes anterior">‹</a>
+      <a href="{BP}/calendar?year={next_y}&month={next_m}" class="calp-nav-btn" title="Mes siguiente">›</a>
+      <h1 class="calp-month-title">{month_title}</h1>
     </div>
-    <div class="cal-grid-wrap">
-      <div class="cal-grid">
-        {dow_headers}
-        {cells_html}
+    <div style="flex:1"></div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <a href="{BP}/calendar?view=week&week_start={today_monday}" class="calp-btn-ghost">Semana</a>
+      <span class="calp-btn-ghost active">Mes</span>
+      <a href="{BP}/calendar?year={today.year}&month={today.month}" class="calp-btn-ghost">Hoy</a>
+      {add_btn_html}
+    </div>
+  </div>
+
+  <!-- Legend strip -->
+  <div class="calp-legend-strip">
+    <div class="calp-legend-group">
+      <span class="calp-legend-label">Estado técnico</span>
+      <div class="calp-legend-item"><div class="calp-legend-dot" style="background:#22c55e"></div>Disponible</div>
+      <div class="calp-legend-item"><div class="calp-legend-dot" style="background:#4b5563"></div>Libre</div>
+      <div class="calp-legend-item"><div class="calp-legend-dot" style="background:#6366f1"></div>Vacaciones</div>
+      <div class="calp-legend-item"><div class="calp-legend-dot" style="background:#f43f5e"></div>Baja</div>
+      <div class="calp-legend-item"><div class="calp-legend-dot" style="background:#f97316"></div>Desplazado</div>
+    </div>
+    <div class="calp-legend-sep"></div>
+    <div class="calp-legend-group">
+      <span class="calp-legend-label">Carga</span>
+      <div class="calp-legend-heat">
+        Carga:
+        <div class="calp-heat-swatch" style="background:rgba(59,130,246,.06)"></div>
+        <div class="calp-heat-swatch" style="background:rgba(59,130,246,.13)"></div>
+        <div class="calp-heat-swatch" style="background:rgba(59,130,246,.22)"></div>
+        <div class="calp-heat-swatch" style="background:rgba(245,158,11,.28)"></div>
+        <div class="calp-heat-swatch" style="background:rgba(244,63,94,.28)"></div>
+        <span style="margin-left:2px">baja → alta</span>
       </div>
     </div>
   </div>
-  {right}
+
+  <!-- DOW row -->
+  <div class="calp-dow-row">
+    {dow_headers_html}
+  </div>
+
+  <!-- Main canvas: grid + sidebar -->
+  <div class="calp-body">
+
+    <!-- Grid -->
+    <div class="calp-grid-wrap">
+      <div class="calp-grid" id="calpGrid">
+        {cells_html}
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <aside class="calp-sidebar">
+
+      <!-- Mini calendar -->
+      <div class="calp-mini-cal">
+        <div class="calp-mini-cal-header">
+          <span class="calp-mini-cal-title">{_MONTH_NAMES_ES[month-1]} {year}</span>
+          <div class="calp-mini-nav">
+            <a href="{BP}/calendar?year={prev_y}&month={prev_m}" class="calp-mini-nav-btn">‹</a>
+            <a href="{BP}/calendar?year={next_y}&month={next_m}" class="calp-mini-nav-btn">›</a>
+          </div>
+        </div>
+        <div class="calp-mini-dow-row">
+          <div class="calp-mini-dow">L</div><div class="calp-mini-dow">M</div>
+          <div class="calp-mini-dow">X</div><div class="calp-mini-dow">J</div>
+          <div class="calp-mini-dow">V</div><div class="calp-mini-dow">S</div>
+          <div class="calp-mini-dow">D</div>
+        </div>
+        <div class="calp-mini-grid" id="calpMiniGrid">
+          {mini_grid_html}
+        </div>
+      </div>
+
+      <!-- Equipo hoy -->
+      <div class="calp-team-panel">
+        <div class="calp-panel-title">Equipo hoy</div>
+        {team_today_html}
+      </div>
+
+      <!-- 4 tarjetas de estadísticas -->
+      {stats_cards_html}
+
+      <!-- No-selection placeholder -->
+      <div class="calp-no-selection" id="calpNoSelection">
+        <div class="calp-no-selection-icon">📅</div>
+        <div>Haz clic en un día para ver el detalle del equipo</div>
+      </div>
+
+      <!-- Detail panel -->
+      <div class="calp-detail-panel" id="calpDetailPanel">
+        <div class="calp-detail-header">
+          <div class="calp-detail-date" id="calpDetailDate"></div>
+          <button class="calp-detail-close" id="calpDetailClose">✕</button>
+        </div>
+        <div class="calp-detail-techs" id="calpDetailTechs"></div>
+        <div class="calp-detail-acts" id="calpDetailActs"></div>
+      </div>
+
+    </aside>
+  </div>
+
 </div>
-{act_modal}
+
+</div><!-- /desk-only -->
+
+{act_modal_html}
+
 <script>
-var bp={json.dumps(BP)};
-{act_js}
+var bp = {json.dumps(BP)};
+var calpYear  = {year};
+var calpMonth = {month};
+var CALP_DAY_DATA = {day_data_json};
+
+var CALP_DOW    = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+var CALP_MONTHS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+                   'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+var CALP_AVAIL_LABEL = {{
+  available:'Disponible', remote:'Remoto', off:'Sin asignar',
+  day_off:'Día libre', sick:'Baja médica', vacation:'Vacaciones', traveling:'Desplazado'
+}};
+var CALP_TYPE_ICON  = {{physical:'🔧', online:'🌐', meeting:'👥', travel:'✈️', other:'📌'}};
+var CALP_TYPE_COLOR = {{
+  physical:'#3b82f6', online:'#8b5cf6', meeting:'#dc2626',
+  travel:'#d97706', other:'#64748b'
+}};
+</script>
+<script>
+{act_js_str}
 {_avail_cr_js()}
+
+(function() {{
+  var grid = document.getElementById('calpGrid');
+  var tooltip = document.getElementById('calp-tooltip');
+  var ttName  = document.getElementById('calp-tt-name');
+  var ttStatus = document.getElementById('calp-tt-status');
+  var ttActs  = document.getElementById('calp-tt-acts');
+  if (!grid) return;
+
+  /* ── Avatar tooltip ─────────────────────────────────────────────── */
+  document.addEventListener('mouseover', function(e) {{
+    var av = e.target.closest('.calp-avatar[data-tech-name]');
+    if (!av) {{ tooltip.style.display = 'none'; return; }}
+    ttName.textContent  = av.dataset.techName || '';
+    ttStatus.textContent = av.dataset.techAvail || '';
+    ttStatus.className  = 'calp-tooltip-status ' + (av.dataset.avail || '');
+    var acts = parseInt(av.dataset.techActs || '0');
+    ttActs.textContent  = acts ? acts + ' actividad' + (acts > 1 ? 'es' : '') : 'Sin actividades';
+    tooltip.style.display = 'block';
+  }});
+  document.addEventListener('mousemove', function(e) {{
+    var av = e.target.closest('.calp-avatar[data-tech-name]');
+    if (!av) {{ tooltip.style.display = 'none'; return; }}
+    tooltip.style.left = (e.clientX + 14) + 'px';
+    tooltip.style.top  = (e.clientY - 10) + 'px';
+  }});
+  document.addEventListener('mouseout', function(e) {{
+    if (!e.target.closest('.calp-avatar[data-tech-name]')) tooltip.style.display = 'none';
+  }});
+
+  /* ── Detail panel ───────────────────────────────────────────────── */
+  function closeDetail() {{
+    document.getElementById('calpDetailPanel').classList.remove('visible');
+    document.getElementById('calpNoSelection').style.display = '';
+    grid.querySelectorAll('.calp-day-cell.selected').forEach(function(c) {{
+      c.classList.remove('selected');
+    }});
+    document.querySelectorAll('.calp-mini-day.selected-mini').forEach(function(m) {{
+      m.classList.remove('selected-mini');
+    }});
+  }}
+
+  function showDetail(dayNum, dowIdx) {{
+    var data = CALP_DAY_DATA[dayNum];
+    if (!data) return;
+
+    document.getElementById('calpDetailDate').textContent =
+      CALP_DOW[dowIdx] + ', ' + dayNum + ' de ' + CALP_MONTHS[calpMonth - 1] + ' ' + calpYear;
+
+    /* Técnicos */
+    var techsEl = document.getElementById('calpDetailTechs');
+    techsEl.innerHTML = '';
+    (data.techs || []).forEach(function(t) {{
+      var statusTxt = CALP_AVAIL_LABEL[t.avail] || t.avail;
+      var card = document.createElement('div');
+      card.className = 'calp-detail-tech-card';
+      card.innerHTML =
+        '<div class="calp-detail-tech-avatar" style="background:' + t.color + '">' + (t.initials || '?') + '</div>' +
+        '<div class="calp-detail-tech-info">' +
+          '<div class="calp-detail-tech-name">' + (t.name || '') + '</div>' +
+          '<div class="calp-detail-tech-status ' + (t.avail || '') + '">' + statusTxt + '</div>' +
+        '</div>';
+      techsEl.appendChild(card);
+    }});
+
+    /* Actividades */
+    var actsEl = document.getElementById('calpDetailActs');
+    actsEl.innerHTML = '';
+    var acts = data.acts || [];
+    var titleEl = document.createElement('div');
+    titleEl.className = 'calp-detail-acts-title';
+    titleEl.textContent = 'Actividades' + (acts.length ? ' (' + acts.length + ')' : '');
+    actsEl.appendChild(titleEl);
+
+    if (acts.length === 0) {{
+      var empty = document.createElement('div');
+      empty.className = 'calp-detail-empty';
+      empty.textContent = 'Sin actividades programadas';
+      actsEl.appendChild(empty);
+    }} else {{
+      acts.forEach(function(a) {{
+        var dotColor = CALP_TYPE_COLOR[a.type] || '#64748b';
+        var icon = CALP_TYPE_ICON[a.type] || '📌';
+        var timeStr = '';
+        if (!a.all_day && a.hour_start !== null && a.hour_start !== undefined) {{
+          timeStr = String(a.hour_start).padStart(2,'0') + ':00';
+          if (a.hour_end) timeStr += '–' + String(a.hour_end).padStart(2,'0') + ':00';
+        }}
+        var actDiv = document.createElement('div');
+        actDiv.className = 'calp-detail-act';
+        actDiv.innerHTML =
+          '<div class="calp-detail-act-dot" style="background:' + dotColor + '"></div>' +
+          '<div class="calp-detail-act-info">' +
+            '<div class="calp-detail-act-name">' + icon + ' ' + (a.pname || '') + '</div>' +
+            '<div class="calp-detail-act-tech">' +
+              (a.tech_name || a.uname || '') +
+              (timeStr ? ' · ' + timeStr : '') +
+            '</div>' +
+          '</div>';
+        actsEl.appendChild(actDiv);
+      }});
+    }}
+
+    document.getElementById('calpNoSelection').style.display = 'none';
+    document.getElementById('calpDetailPanel').classList.add('visible');
+  }}
+
+  /* Clic en celda */
+  grid.addEventListener('click', function(e) {{
+    if (e.target.closest('.calp-avatar')) return;
+    var cell = e.target.closest('.calp-day-cell:not(.other-month):not(.weekend)');
+    if (!cell) return;
+    var dayNum = parseInt(cell.dataset.day || '0');
+    var dowIdx = parseInt(cell.dataset.dow || '0');
+    if (!dayNum) return;
+
+    if (cell.classList.contains('selected')) {{
+      cell.classList.remove('selected');
+      closeDetail();
+      return;
+    }}
+    grid.querySelectorAll('.calp-day-cell.selected').forEach(function(c) {{
+      c.classList.remove('selected');
+    }});
+    cell.classList.add('selected');
+    showDetail(dayNum, dowIdx);
+
+    /* Resaltar mini-cal */
+    document.querySelectorAll('.calp-mini-day').forEach(function(m) {{
+      m.classList.remove('selected-mini');
+    }});
+    document.querySelectorAll('.calp-mini-day:not(.other)').forEach(function(m) {{
+      if (parseInt(m.textContent) === dayNum) m.classList.add('selected-mini');
+    }});
+  }});
+
+  /* Cerrar panel */
+  var closeBtn = document.getElementById('calpDetailClose');
+  if (closeBtn) closeBtn.addEventListener('click', closeDetail);
+
+  /* Animación escalonada */
+  grid.querySelectorAll('.calp-day-cell').forEach(function(cell, i) {{
+    cell.style.animationDelay = Math.min(i * 6, 100) + 'ms';
+  }});
+}})();
 </script>"""
+
     return _shell("calendar", user, content, title="Calendario")
 
 

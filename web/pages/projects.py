@@ -42,11 +42,19 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
     techs = rs(q("SELECT id,display_name FROM users WHERE active=1 AND show_in_planning=1 ORDER BY display_name"))
     tech_opts = "".join(f'<option value="{t["id"]}">{_esc(t["display_name"])}</option>' for t in techs)
 
-    fbtn = lambda s, l: (f'<a href="{_pu(status=s)}" '
-        f'class="btn btn-sm {"btn-primary" if filter_status==s else "btn-ghost"}">{l}</a>')
-    filters = (fbtn("","Todos")+fbtn("active","Activos")+fbtn("paused","Pausados")
-               +fbtn("quoted","Presupuestados")+fbtn("pending_approval","Pend. firma")
-               +fbtn("completed","Completados")+fbtn("cancelled","Cancelados"))
+    # Counts for subtitle
+    all_projs = rs(q("SELECT status FROM projects"))
+    cnt_active = sum(1 for p in all_projs if p["status"] in ("active","paused","quoted","pending_approval"))
+    cnt_done_month = sum(1 for p in all_projs if p["status"] == "completed")
+
+    fchip = lambda s, l, dot="": (
+        f'<a href="{_pu(status=s)}" class="fc {"active" if filter_status==s else ""}">'
+        f'{"<span class=\'fc-dot\' style=\'background:"+dot+"\'></span>" if dot else ""}{l}</a>'
+    )
+    filters = (fchip("","Todos") + fchip("active","Activos","#22c55e")
+               + fchip("paused","Pausados","#f59e0b") + fchip("quoted","Presupuestados","#3b82f6")
+               + fchip("pending_approval","Pend. firma","#a78bfa")
+               + fchip("completed","Completados","#6b7280") + fchip("cancelled","Cancelados","#ef4444"))
 
     wtype_opts = ('<option value="' + _pu(wtype="") + '"' +
                   (' selected' if not wtype_filter else '') + '>Todos los tipos</option>')
@@ -88,8 +96,8 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
         search_val = f"{p['name']} {p['client']} {p.get('reference','') or ''} {p.get('tech','') or ''}".lower()
         pid = p["id"]
         cards_html += (
-            f'<a class="proj-card" href="{BP}/projects/{pid}" data-search="{_esc(search_val)}"'
-            f' style="border-left:3px solid {bc}">'
+            f'<a class="proj-card" href="{BP}/projects/{pid}" data-search="{_esc(search_val)}">'
+            f'<div class="proj-card-strip" style="background:{bc}"></div>'
             f'<div class="proj-card-body">'
             f'<div class="proj-card-name">{_esc(p["name"])}</div>'
             f'<div class="proj-card-client">{_esc(p["client"])}</div>'
@@ -141,9 +149,83 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
     url_cards = _pu(view="cards")
     url_list  = _pu(view="list")
 
+    # ── Mobile card list ─────────────────────────────────────────────────────────
+    mob_cards_html = ""
+    for p in projects:
+        pct_m = int(p['task_d']/p['task_t']*100) if p['task_t'] else 0
+        is_crit_m = p.get('priority') == 'urgent' and p.get('status') == 'active'
+        bc_m = 'var(--s-err)' if is_crit_m else _border_color.get(p['status'], "#a8a29e")
+        pc_m = _prog_color.get(p['status'], "#a8a29e")
+        wt = p.get('work_type') or 'proyecto'
+        wt_info_m = WORK_TYPES.get(wt, {})
+        due_str_m = f'🗓 {_fd(p["due_date"])}' if p.get("due_date") else ""
+        tech_str_m = f'👤 {_esc(p["tech"])}' if p.get("tech") else ""
+        ref_str_m  = f'#{_esc(p["reference"])}' if p.get("reference") else ""
+        badge_m = _badge2(p["status"])
+        mob_cards_html += (
+            f'<a class="mob-proj-card" href="{BP}/projects/{p["id"]}" data-search="{_esc(str(p["name"]) + " " + str(p["client"]))}">'
+            f'<div class="mob-proj-card-stripe" style="background:{bc_m}"></div>'
+            f'<div class="mob-proj-card-body">'
+            f'<div class="mob-proj-card-r1">'
+            f'<div class="mob-proj-card-info">'
+            f'<div class="mob-proj-card-name">{_esc(p["name"])}</div>'
+            f'<div class="mob-proj-card-client">{_esc(p["client"])}</div>'
+            f'</div>'
+            f'</div>'
+            f'<div class="mob-proj-card-r2">'
+            f'{badge_m}'
+            f'{_wt_badge(wt)}'
+            f'{"<span class=\'chip\' style=\'font-size:.65rem\'>" + ref_str_m + "</span>" if ref_str_m else ""}'
+            f'</div>'
+            f'<div class="mob-proj-card-r3">'
+            f'<div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:0">'
+            f'{"<span style=\'font-size:.7rem;color:var(--muted)\'>" + due_str_m + "</span>" if due_str_m else ""}'
+            f'{"<span style=\'font-size:.7rem;color:var(--muted)\'>" + tech_str_m + "</span>" if tech_str_m else ""}'
+            f'</div>'
+            f'{"<div class=\'mob-proj-progress\'><div class=\'mob-proj-pbw\'><div class=\'mob-proj-pbf\' style=\'width:" + str(pct_m) + "%;background:" + pc_m + "\'></div></div><span class=\'mob-proj-pct\'>" + str(pct_m) + "%</span></div>" if p["task_t"] else ""}'
+            f'</div>'
+            f'</div></a>'
+        )
+    if not mob_cards_html:
+        mob_cards_html = f'<div style="text-align:center;padding:32px;color:var(--muted)">Sin proyectos todavía</div>'
+
+    _mc_all  = "btn-primary" if not filter_status else "btn-ghost"
+    _mc_act  = "btn-primary" if filter_status == "active"    else "btn-ghost"
+    _mc_pau  = "btn-primary" if filter_status == "paused"    else "btn-ghost"
+    _mc_done = "btn-primary" if filter_status == "completed" else "btn-ghost"
+
     content = f"""
+<!-- Mobile view (≤767px) -->
+<div class="mob-only">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:8px">
+    <h1 style="margin:0">Proyectos</h1>
+    <button onclick="openNewProject()" class="btn btn-primary btn-sm" style="min-height:44px;padding:0 16px">+ Nuevo</button>
+  </div>
+  <div style="position:relative;margin-bottom:10px">
+    <svg style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);pointer-events:none"
+         width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+    </svg>
+    <input type="search" placeholder="Buscar…"
+           style="padding-left:34px;width:100%" oninput="filterMobProjects(this.value)">
+  </div>
+  <div style="display:flex;gap:6px;overflow-x:auto;margin-bottom:12px;padding-bottom:4px;scrollbar-width:none">
+    <a href="{_pu(status='')}"           class="btn btn-sm {_mc_all}">Todos</a>
+    <a href="{_pu(status='active')}"     class="btn btn-sm {_mc_act}">Activos</a>
+    <a href="{_pu(status='paused')}"     class="btn btn-sm {_mc_pau}">Pausados</a>
+    <a href="{_pu(status='completed')}"  class="btn btn-sm {_mc_done}">Hechos</a>
+  </div>
+  <div id="mob-proj-list">{mob_cards_html}</div>
+  <div id="mob-proj-empty" style="display:none;text-align:center;padding:24px;color:var(--muted)">Sin resultados</div>
+</div>
+
+<!-- Desktop/tablet view (≥768px) -->
+<div class="desk-only">
 <div class="toolbar">
-  <h1>Proyectos</h1>
+  <div>
+    <h1 style="margin-bottom:2px">Proyectos</h1>
+    <div class="page-sub">{cnt_active} activos · {cnt_done_month} completados</div>
+  </div>
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
     <div style="position:relative">
       <svg style="position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--muted);pointer-events:none"
@@ -163,21 +245,19 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
     <button class="btn btn-primary" onclick="openNewProject()">+ Nuevo</button>
   </div>
 </div>
-<div class="toolbar-left" style="margin-bottom:18px;gap:8px;flex-wrap:wrap">
-  {filters}
-  <select onchange="location.href=this.value" style="height:32px;padding:0 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:.82rem">{wtype_opts}</select>
-  <select onchange="location.href=this.value" style="height:32px;padding:0 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:.82rem">{tech_sel_opts2}</select>
-  <form method="get" action="{BP}/projects" style="display:inline-flex;gap:6px;align-items:center">
+<div class="frow">{filters}
+  <select onchange="location.href=this.value" class="fc" style="border-radius:999px;height:30px;padding:0 10px;font-size:.78rem;font-weight:500;cursor:pointer">{wtype_opts}</select>
+  <select onchange="location.href=this.value" class="fc" style="border-radius:999px;height:30px;padding:0 10px;font-size:.78rem;font-weight:500;cursor:pointer">{tech_sel_opts2}</select>
+  <form method="get" action="{BP}/projects" style="display:inline-flex;gap:4px;align-items:center;flex-shrink:0">
     <input type="hidden" name="status" value="{_esc(filter_status)}">
     <input type="hidden" name="view" value="{_esc(view)}">
     <input type="hidden" name="tech" value="{_esc(tech_filter)}">
     <input type="hidden" name="wtype" value="{_esc(wtype_filter)}">
-    <span class="muted" style="font-size:.8rem;white-space:nowrap">Límite:</span>
-    <input type="date" name="dfrom" value="{_esc(dfrom)}" style="height:32px;padding:0 6px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:.82rem">
-    <span class="muted" style="font-size:.8rem">—</span>
-    <input type="date" name="dto" value="{_esc(dto)}" style="height:32px;padding:0 6px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:.82rem">
-    <button type="submit" class="btn btn-ghost btn-sm">Filtrar</button>
-    {f'<a href="{_pu(dfrom="",dto="")}" class="btn btn-ghost btn-sm">✕</a>' if dfrom or dto else ''}
+    <input type="date" name="dfrom" value="{_esc(dfrom)}" class="fc" style="border-radius:999px;height:30px;padding:0 10px;font-size:.78rem">
+    <span style="color:var(--muted);font-size:.8rem">—</span>
+    <input type="date" name="dto" value="{_esc(dto)}" class="fc" style="border-radius:999px;height:30px;padding:0 10px;font-size:.78rem">
+    <button type="submit" class="fc active" style="border:none;cursor:pointer">Filtrar</button>
+    {f'<a href="{_pu(dfrom="",dto="")}" class="fc" style="color:var(--danger,#dc2626)">✕</a>' if dfrom or dto else ''}
   </form>
 </div>
 <div id="proj-search-empty" style="display:none;text-align:center;padding:32px;color:var(--muted)">
@@ -196,6 +276,7 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
   </tr></thead><tbody>{rows or "<tr><td colspan='7' class='muted' style='text-align:center;padding:24px'>Sin proyectos</td></tr>"}</tbody></table></div>
 </div>
 </div>
+</div><!-- /desk-only -->
 
 <div class="modal-bg" id="proj-modal">
 <div class="modal">
@@ -250,6 +331,18 @@ def _projects_page(user, filter_status="", view="cards", new="", tech_filter="",
 
 <script>
 var bp={json.dumps(BP)};
+function filterMobProjects(q){{
+  q=q.toLowerCase().trim();
+  var cards=document.querySelectorAll('#mob-proj-list .mob-proj-card[data-search]');
+  var vis=0;
+  cards.forEach(function(el){{
+    var show=!q||el.dataset.search.indexOf(q)>=0;
+    el.style.display=show?'':'none';
+    if(show)vis++;
+  }});
+  var empty=document.getElementById('mob-proj-empty');
+  if(empty)empty.style.display=(q&&vis===0)?'block':'none';
+}}
 function filterProjects(q){{
   q=q.toLowerCase().trim();
   var cards=document.querySelectorAll('.proj-card[data-search]');

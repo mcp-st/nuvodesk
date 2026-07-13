@@ -115,19 +115,94 @@ document.getElementById('averia-form').onsubmit=function(e){{
 }};
 </script>"""
 
-    content = f"""<div class="toolbar"><h1>Mi jornada</h1>
-  <button class="btn btn-primary" onclick="openAveriaRapida()">⚡ Avería rápida</button></div>
-{kpis}
-{timer_html}
-<div class="card">
-  <div class="toolbar"><h2>Mis proyectos activos</h2>
-    <a href="{BP}/projects" class="btn btn-ghost btn-sm">Ver todos →</a></div>
-  {"<div class='tbl-wrap'><table><thead><tr><th>Proyecto</th><th>Prioridad</th><th>Límite</th><th>Avance</th><th></th></tr></thead><tbody>" + proj_rows + "</tbody></table></div>" if proj_rows else "<p class='muted' style='text-align:center;padding:24px'>Sin proyectos activos asignados</p>"}
-</div>
-<div class="card">
-  <h2>Mis tareas pendientes</h2>
-  {"<div class='tbl-wrap'><table><thead><tr><th>Estado</th><th>Tarea</th><th>Proyecto</th><th>Límite</th></tr></thead><tbody>" + task_rows + "</tbody></table></div>" if task_rows else "<p class='muted' style='text-align:center;padding:24px'>Sin tareas pendientes asignadas</p>"}
+    # ── Mobile dashboard (mob-only) ──────────────────────────────────
+    uname_display = _esc((user.get("display_name") or "").split()[0] or "usuario")
+
+    # Build mobile project rows
+    mob_proj_items = ""
+    for p in my_projects[:5]:
+        pct_m = int(p['task_d']/p['task_t']*100) if p['task_t'] else 0
+        wt = p.get("work_type") or "proyecto"
+        from core.helpers import WORK_TYPES
+        wt_info = WORK_TYPES.get(wt, WORK_TYPES['proyecto'])
+        stripe_color = wt_info.get('color', '#2563eb')
+        due_str = _fd(p.get("due_date") or "") if p.get("due_date") else ""
+        mob_proj_items += (
+            f'<a class="mob-proj-row" href="{BP}/projects/{p["id"]}">'
+            f'<div class="mob-proj-stripe" style="background:{stripe_color}"></div>'
+            f'<div class="mob-proj-body">'
+            f'<div class="mob-proj-name">{_esc(p["name"])}</div>'
+            f'<div class="mob-proj-client">{_esc(p["client"])}</div>'
+            f'<div class="mob-proj-meta">'
+            f'{"<span class=\'mob-proj-meta-item\'>🗓 " + due_str + "</span>" if due_str else ""}'
+            f'<span class="mob-proj-meta-item">{wt_info.get("icon","📋")} {_esc(wt_info.get("name", wt))}</span>'
+            f'</div>'
+            f'{"<div class=\'mob-proj-pbar-w\'><div class=\'mob-proj-pbar-f\' style=\'width:" + str(pct_m) + "%;background:" + stripe_color + "\'></div></div>" if p["task_t"] else ""}'
+            f'</div></a>'
+        )
+    if not mob_proj_items:
+        mob_proj_items = '<p style="color:var(--muted);font-size:.82rem;padding:8px 0">Sin proyectos activos</p>'
+
+    mob_section = f"""
+<div class="mob-only">
+  <div class="mob-greeting">Hola, {uname_display} 👋</div>
+  <div class="mob-kpis">
+    <div class="mob-kpi brand" style="color:var(--brand)">
+      <div class="mob-kpi-val" style="color:var(--brand)">{len(my_projects)}</div>
+      <div class="mob-kpi-lbl">Activos</div>
+    </div>
+    <div class="mob-kpi warn">
+      <div class="mob-kpi-val" style="color:var(--s-warn)">{len(my_tasks)}</div>
+      <div class="mob-kpi-lbl">Tareas</div>
+    </div>
+    <div class="mob-kpi ok">
+      <div class="mob-kpi-val" style="color:var(--s-ok)">{h_today}h</div>
+      <div class="mob-kpi-lbl">Hoy</div>
+    </div>
+  </div>
+  <div class="mob-qa-grid">
+    <a href="{BP}/projects?new=averia" class="mob-qa">
+      <div class="mob-qa-ico">⚡</div>
+      <div class="mob-qa-lbl">Avería rápida</div>
+    </a>
+    <a href="{BP}/projects" class="mob-qa">
+      <div class="mob-qa-ico">📁</div>
+      <div class="mob-qa-lbl">Proyectos</div>
+    </a>
+    <a href="{BP}/calendar" class="mob-qa">
+      <div class="mob-qa-ico">📅</div>
+      <div class="mob-qa-lbl">Agenda</div>
+    </a>
+    <a href="{BP}/inventory" class="mob-qa">
+      <div class="mob-qa-ico">📦</div>
+      <div class="mob-qa-lbl">Stock</div>
+    </a>
+  </div>
+  <div class="mob-sh">
+    <span class="mob-sh-title">Mis proyectos activos</span>
+    <a href="{BP}/projects" class="mob-sh-link">Ver todos →</a>
+  </div>
+  {mob_proj_items}
 </div>"""
+
+    desk_section = f"""
+<div class="desk-only">
+  <div class="toolbar"><h1>Mi jornada</h1>
+    <button class="btn btn-primary" onclick="openAveriaRapida()">⚡ Avería rápida</button></div>
+  {kpis}
+  {timer_html}
+  <div class="card">
+    <div class="toolbar"><h2>Mis proyectos activos</h2>
+      <a href="{BP}/projects" class="btn btn-ghost btn-sm">Ver todos →</a></div>
+    {"<div class='tbl-wrap'><table><thead><tr><th>Proyecto</th><th>Prioridad</th><th>Límite</th><th>Avance</th><th></th></tr></thead><tbody>" + proj_rows + "</tbody></table></div>" if proj_rows else "<p class='muted' style='text-align:center;padding:24px'>Sin proyectos activos asignados</p>"}
+  </div>
+  <div class="card">
+    <h2>Mis tareas pendientes</h2>
+    {"<div class='tbl-wrap'><table><thead><tr><th>Estado</th><th>Tarea</th><th>Proyecto</th><th>Límite</th></tr></thead><tbody>" + task_rows + "</tbody></table></div>" if task_rows else "<p class='muted' style='text-align:center;padding:24px'>Sin tareas pendientes asignadas</p>"}
+  </div>
+</div>"""
+
+    content = mob_section + desk_section
     return _shell("dashboard", user, content + averia_modal_day, title="Mi jornada")
 
 
@@ -325,9 +400,79 @@ function unblockTask(tid){{
 }}
 </script>"""
 
-    content = (f'<div class="toolbar"><h1>Dashboard</h1>'
-               f'<button class="btn btn-primary" onclick="openAveriaRapida()">⚡ Avería rápida</button></div>'
-               f'{triage_html}{kpis}{bt_html}{dw_html}{low_html}{od_html}{rp_html}{averia_modal}')
+    # ── Mobile section for admin dashboard ───────────────────────────
+    uname_adm = _esc((user.get("display_name") or "Admin").split()[0])
+    mob_adm_proj_items = ""
+    for p in (recent or [])[:5]:
+        from core.helpers import WORK_TYPES
+        wt_a = p.get("work_type") or "proyecto"
+        stripe_color_a = WORK_TYPES.get(wt_a, WORK_TYPES['proyecto']).get('color', '#2563eb')
+        due_str_a = _fd(p.get("due_date") or "") if p.get("due_date") else ""
+        mob_adm_proj_items += (
+            f'<a class="mob-proj-row" href="{BP}/projects/{p["id"]}">'
+            f'<div class="mob-proj-stripe" style="background:{stripe_color_a}"></div>'
+            f'<div class="mob-proj-body">'
+            f'<div class="mob-proj-name">{_esc(p["name"])}</div>'
+            f'<div class="mob-proj-client">{_esc(p["client"])}</div>'
+            f'<div class="mob-proj-meta">'
+            f'{"<span class=\'mob-proj-meta-item\'>🗓 " + due_str_a + "</span>" if due_str_a else ""}'
+            f'<span class="mob-proj-meta-item">👤 {_esc(p.get("tech") or "Sin asignar")}</span>'
+            f'</div>'
+            f'</div></a>'
+        )
+    if not mob_adm_proj_items:
+        mob_adm_proj_items = '<p style="color:var(--muted);font-size:.82rem;padding:8px 0">Sin proyectos recientes</p>'
+
+    mob_adm_section = f"""
+<div class="mob-only">
+  <div class="mob-greeting">Hola, {uname_adm} 👋</div>
+  <div class="mob-kpis">
+    <div class="mob-kpi brand">
+      <div class="mob-kpi-val" style="color:var(--brand)">{ps.get('active') or 0}</div>
+      <div class="mob-kpi-lbl">Activos</div>
+    </div>
+    <div class="mob-kpi warn">
+      <div class="mob-kpi-val" style="color:var(--s-warn)">{n_fuego}</div>
+      <div class="mob-kpi-lbl">Fuego</div>
+    </div>
+    <div class="mob-kpi ok">
+      <div class="mob-kpi-val" style="color:var(--s-ok)">{ps.get('done') or 0}</div>
+      <div class="mob-kpi-lbl">Cerrados</div>
+    </div>
+  </div>
+  <div class="mob-qa-grid">
+    <a href="{BP}/projects?new=averia" class="mob-qa">
+      <div class="mob-qa-ico">⚡</div>
+      <div class="mob-qa-lbl">Avería rápida</div>
+    </a>
+    <a href="{BP}/projects" class="mob-qa">
+      <div class="mob-qa-ico">📁</div>
+      <div class="mob-qa-lbl">Proyectos</div>
+    </a>
+    <a href="{BP}/calendar" class="mob-qa">
+      <div class="mob-qa-ico">📅</div>
+      <div class="mob-qa-lbl">Agenda</div>
+    </a>
+    <a href="{BP}/inventory" class="mob-qa">
+      <div class="mob-qa-ico">📦</div>
+      <div class="mob-qa-lbl">Stock</div>
+    </a>
+  </div>
+  <div class="mob-sh">
+    <span class="mob-sh-title">Proyectos recientes</span>
+    <a href="{BP}/projects" class="mob-sh-link">Ver todos →</a>
+  </div>
+  {mob_adm_proj_items}
+</div>"""
+
+    desk_adm_section = f"""
+<div class="desk-only">
+  <div class="toolbar"><h1>Dashboard</h1>
+    <button class="btn btn-primary" onclick="openAveriaRapida()">⚡ Avería rápida</button></div>
+  {triage_html}{kpis}{bt_html}{dw_html}{low_html}{od_html}{rp_html}
+</div>"""
+
+    content = mob_adm_section + desk_adm_section + averia_modal
     return _shell("dashboard", user, content, title="Dashboard")
 
 # ── projects list ─────────────────────────────────────────────────────────────

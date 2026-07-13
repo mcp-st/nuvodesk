@@ -913,7 +913,180 @@ def _project_detail(user, pid):
     } for t in tasks], ensure_ascii=False)
     task_dep_opts = "".join(
         f'<option value="{t["id"]}">{_esc(t["title"][:60])}</option>' for t in tasks)
+
+    # ── mobile detail: work-type color / icon ──
+    from core.helpers import WORK_TYPES as _WT
+    _wt_info = _WT.get(p.get('work_type') or 'proyecto', _WT['proyecto'])
+    _bc  = _wt_info['color']
+    _wt_icon = _wt_info['icon']
+    _wt_name = _wt_info['name']
+
+    # ── mobile task rows ──
+    _mob_task_rows = ""
+    for _t in tasks:
+        _done = _t['status'] == 'done'
+        _done_cls = ' mob-task-done' if _done else ''
+        _checked  = ' checked' if _done else ''
+        _due_lbl  = f'<span style="font-size:.72rem;color:var(--muted)">{_esc((_t.get("due_date") or "")[:10])}</span>' if _t.get("due_date") else ''
+        _mob_task_rows += (
+            f'<div class="mob-task-item{_done_cls}">'
+            f'<input type="checkbox"{_checked} onchange="toggleTask({_t["id"]},{json.dumps(_t["status"])})">'
+            f'<div><div class="mob-task-name">{_esc(_t["title"])}</div>{_due_lbl}</div>'
+            f'</div>'
+        )
+    if not _mob_task_rows:
+        _mob_task_rows = '<p style="color:var(--muted);font-size:.85rem;padding:12px 0">Sin tareas</p>'
+
+    # ── mobile material rows ──
+    _mob_mat_rows = ""
+    for _a in assignments:
+        _mob_mat_rows += (
+            f'<div class="mob-mat-item">'
+            f'<div><div style="font-weight:500;color:var(--text)">{_esc(_a["mat_name"])}</div>'
+            f'<div style="font-size:.72rem;color:var(--muted)">{_esc(_a["mat_code"])} · {_esc(_a["mat_unit"])}</div></div>'
+            f'<div style="text-align:right">'
+            f'<div style="font-weight:700">{_a["qty_requested"]}</div>'
+            f'<div style="font-size:.72rem;color:var(--muted)">solicitado</div></div>'
+            f'</div>'
+        )
+    if not _mob_mat_rows:
+        _mob_mat_rows = '<p style="color:var(--muted);font-size:.85rem;padding:12px 0">Sin materiales asignados</p>'
+
+    # ── mobile photo grid ──
+    _mob_photo_items = ""
+    for _pf in pfiles[:8]:
+        _fname = _esc(_pf.get('filename',''))
+        _furl  = f'{BP}/projects/{pid}/files/{_pf["id"]}'
+        _is_img = any(_fname.lower().endswith(ext) for ext in ('.jpg','.jpeg','.png','.gif','.webp'))
+        if _is_img:
+            _mob_photo_items += (
+                f'<a href="{_furl}" target="_blank" style="display:block;border-radius:8px;overflow:hidden;background:var(--bg2);border:1px solid var(--border);aspect-ratio:1">'
+                f'<img src="{_furl}" alt="{_fname}" style="width:100%;height:100%;object-fit:cover">'
+                f'</a>'
+            )
+    if not _mob_photo_items:
+        _mob_photo_items = '<p style="color:var(--muted);font-size:.85rem;padding:12px 0;grid-column:1/-1">Sin fotos subidas</p>'
+
+    # ── mobile info fields ──
+    _mob_info_fields = [
+        ("Dirección",   p.get("address","")),
+        ("Técnico",     p.get("tech","")),
+        ("Fecha límite",(p.get("due_date") or "")[:10]),
+        ("Estado",      STATUS_LABEL.get(p.get("status","active"), p.get("status",""))),
+        ("Prioridad",   {"low":"Baja","normal":"Normal","high":"Alta","urgent":"Urgente"}.get(p.get("priority","normal"),"Normal")),
+        ("Referencia",  p.get("reference","")),
+    ]
+    _mob_info_html = ""
+    for _lbl, _val in _mob_info_fields:
+        if _val:
+            _mob_info_html += (
+                f'<div style="display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">'
+                f'<span style="font-size:.8rem;color:var(--muted);min-width:100px;flex-shrink:0">{_esc(_lbl)}</span>'
+                f'<span style="font-size:.85rem;color:var(--text);font-weight:500">{_esc(str(_val))}</span>'
+                f'</div>'
+            )
+    if p.get("description"):
+        _mob_info_html += (
+            f'<div style="padding:10px 0">'
+            f'<div style="font-size:.75rem;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Descripción</div>'
+            f'<p style="font-size:.85rem;color:var(--text);line-height:1.6;margin:0">{_esc(p["description"])}</p>'
+            f'</div>'
+        )
+
+    # ── mobile section HTML ──
+    _mob_section = f"""
+<div class="mob-only mob-proj-detail">
+  <div class="mob-pd-header" style="border-left:4px solid {_bc}">
+    <div class="mob-pd-type-badge" style="background:{_bc}22;color:{_bc}">{_wt_icon} {_esc(_wt_name)}</div>
+    <div class="mob-pd-name">{_esc(p["name"])}</div>
+    <div class="mob-pd-client">{_esc(p["client"])}</div>
+    <div class="mob-pd-progress">
+      <div class="mob-pd-pbar"><div style="width:{task_pct}%;background:{_bc}"></div></div>
+      <span>{task_pct}% completado</span>
+    </div>
+  </div>
+  <div class="mob-pd-tabs">
+    <button class="mob-pd-tab active" onclick="mobTab(this,'mob-tab-info')">Info</button>
+    <button class="mob-pd-tab" onclick="mobTab(this,'mob-tab-tasks')">Tareas</button>
+    <button class="mob-pd-tab" onclick="mobTab(this,'mob-tab-mats')">Materiales</button>
+    <button class="mob-pd-tab" onclick="mobTab(this,'mob-tab-photos')">Fotos</button>
+    <button class="mob-pd-tab" onclick="mobTab(this,'mob-tab-sign')">Firma</button>
+  </div>
+  <!-- Tab Info -->
+  <div class="mob-pd-panel" id="mob-tab-info" style="display:block">
+    {_mob_info_html or '<p style="color:var(--muted);font-size:.85rem;padding:12px 0">Sin datos del proyecto</p>'}
+  </div>
+  <!-- Tab Tareas -->
+  <div class="mob-pd-panel" id="mob-tab-tasks" style="display:none">
+    {_mob_task_rows}
+  </div>
+  <!-- Tab Materiales -->
+  <div class="mob-pd-panel" id="mob-tab-mats" style="display:none">
+    {_mob_mat_rows}
+  </div>
+  <!-- Tab Fotos -->
+  <div class="mob-pd-panel" id="mob-tab-photos" style="display:none">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      {_mob_photo_items}
+    </div>
+  </div>
+  <!-- Tab Firma -->
+  <div class="mob-pd-panel" id="mob-tab-sign" style="display:none">
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:14px">
+      <div style="font-size:.72rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Resumen del parte</div>
+      <div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)"><span style="font-size:.8rem;color:var(--muted);min-width:70px">Cliente</span><span style="font-size:.85rem;color:var(--text);font-weight:500">{_esc(p["client"])}</span></div>
+      <div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)"><span style="font-size:.8rem;color:var(--muted);min-width:70px">Técnico</span><span style="font-size:.85rem;color:var(--text);font-weight:500">{_esc(p.get("tech","") or "—")}</span></div>
+      <div style="display:flex;gap:8px;padding:6px 0"><span style="font-size:.8rem;color:var(--muted);min-width:70px">Fecha</span><span style="font-size:.85rem;color:var(--text);font-weight:500">{_esc((p.get("due_date") or "")[:10] or "—")}</span></div>
+    </div>
+    <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px;font-weight:500">Firma del cliente:</div>
+    <canvas class="mob-sign-canvas" id="mobSigCanvas" width="700" height="180"></canvas>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn btn-ghost btn-sm" style="flex:1" onclick="mobSigClear()">Limpiar</button>
+      <button class="btn btn-primary btn-sm" style="flex:2" onclick="mobSigSave()">Guardar firma</button>
+    </div>
+    <div id="mobSigSavedMsg" style="display:none;margin-top:10px;background:var(--bg-ok,#f0fdf4);border:1px solid var(--s-ok,#16a34a);border-radius:8px;padding:10px 12px;font-size:.85rem;color:var(--s-ok,#16a34a);font-weight:600">✓ Firma guardada correctamente</div>
+  </div>
+</div>
+<script>
+function mobTab(btn, panelId) {{
+  document.querySelectorAll('.mob-pd-tab').forEach(function(t) {{ t.classList.remove('active'); }});
+  document.querySelectorAll('.mob-pd-panel').forEach(function(p) {{ p.style.display='none'; }});
+  btn.classList.add('active');
+  document.getElementById(panelId).style.display='block';
+  if(panelId==='mob-tab-sign') initMobCanvas();
+}}
+(function(){{
+  var mc=document.getElementById('mobSigCanvas');
+  var _drawing=false;
+  function _gp(e){{
+    var r=mc.getBoundingClientRect();
+    var src=e.touches?e.touches[0]:e;
+    return{{x:(src.clientX-r.left)*(mc.width/r.width),y:(src.clientY-r.top)*(mc.height/r.height)}};
+  }}
+  function initMobCanvas(){{
+    if(!mc||mc._initDone) return;
+    mc._initDone=true;
+    var ctx=mc.getContext('2d');
+    ctx.strokeStyle='#1e293b';ctx.lineWidth=2.5;ctx.lineCap='round';ctx.lineJoin='round';
+    mc.addEventListener('mousedown',function(e){{e.preventDefault();_drawing=true;var p=_gp(e);ctx.beginPath();ctx.moveTo(p.x,p.y);}});
+    mc.addEventListener('mousemove',function(e){{e.preventDefault();if(!_drawing)return;var p=_gp(e);ctx.lineTo(p.x,p.y);ctx.stroke();}});
+    mc.addEventListener('mouseup',function(e){{e.preventDefault();_drawing=false;}});
+    mc.addEventListener('touchstart',function(e){{e.preventDefault();_drawing=true;var p=_gp(e);ctx.beginPath();ctx.moveTo(p.x,p.y);}},{{passive:false}});
+    mc.addEventListener('touchmove',function(e){{e.preventDefault();if(!_drawing)return;var p=_gp(e);ctx.lineTo(p.x,p.y);ctx.stroke();}},{{passive:false}});
+    mc.addEventListener('touchend',function(e){{e.preventDefault();_drawing=false;}},{{passive:false}});
+  }}
+  window.initMobCanvas=initMobCanvas;
+  window.mobSigClear=function(){{if(mc){{var ctx=mc.getContext('2d');ctx.clearRect(0,0,mc.width,mc.height);}}}};
+  window.mobSigSave=function(){{
+    var msg=document.getElementById('mobSigSavedMsg');
+    if(msg){{msg.style.display='block';}}
+  }};
+}})();
+</script>"""
+
     content = f"""
+{_mob_section}
+<div class="desk-only">
 <div style="margin-bottom:8px"><a href="{BP}/projects" class="muted" style="font-size:.85rem">← Proyectos</a></div>
 
 <div class="proj-hd">
@@ -1083,6 +1256,7 @@ def _project_detail(user, pid):
 {f'<div class="card"><h3 style="margin-bottom:12px">Historial de cambios</h3>{audit_html}</div>' if audit_html else ""}
 
 </div>
+</div><!-- /desk-only -->
 
 <!-- MODAL kit recomendación -->
 <div class="modal-bg" id="kit-rec-modal">

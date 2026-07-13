@@ -22,6 +22,68 @@ def _inventory_page(user):
 
     critical = [m for m in mats if m["stock_min"] > 0 and m["stock_warehouse"] <= m["stock_min"]]
 
+    # ── KPI counts ──────────────────────────────────────────────────────────────
+    cnt_low = sum(
+        1 for m in mats
+        if (m["stock_warehouse"] + m["stock_field"]) < m["stock_min"]
+    )
+    cnt_ok = len(mats) - cnt_low
+
+    # ── KPI cards HTML ──────────────────────────────────────────────────────────
+    kpi_html = (
+        f'<div class="inv-kpis">'
+        f'<div class="inv-kpi inv-kpi-warn">'
+        f'<div class="inv-kpi-val">{cnt_low}</div>'
+        f'<div class="inv-kpi-lbl">Bajo mínimo</div>'
+        f'</div>'
+        f'<div class="inv-kpi inv-kpi-ok">'
+        f'<div class="inv-kpi-val">{cnt_ok}</div>'
+        f'<div class="inv-kpi-lbl">Referencias OK</div>'
+        f'</div>'
+        f'</div>'
+    )
+
+    # ── mobile inventory list ────────────────────────────────────────────────────
+    mob_items = ""
+    for m in mats:
+        total = m["stock_warehouse"] + m["stock_field"]
+        pct = min(100, int(total / max(m["stock_min"], 1) * 100))
+        if pct >= 100:
+            lv_cls = "lv-hi"
+        elif pct >= 50:
+            lv_cls = "lv-md"
+        else:
+            lv_cls = "lv-lo"
+        is_low = total < m["stock_min"]
+        item_extra = " lv-lo" if is_low else ""
+        min_style = "color:#f43f5e;font-weight:700" if is_low else ""
+        mob_items += (
+            f'<div class="mob-inv-item{item_extra}" '
+            f'data-name="{_esc((m["name"]+m["code"]).lower())}" '
+            f'data-cat="{_esc(m["category"] or "")}" '
+            f'data-crit="{1 if is_low else 0}">'
+            f'<div class="mob-inv-stripe {lv_cls}"></div>'
+            f'<div class="mob-inv-body">'
+            f'<div class="mob-inv-name">{_esc(m["name"])}</div>'
+            f'<div class="mob-inv-ref">{_esc(m["code"])}</div>'
+            f'<div class="mob-inv-lv-bar">'
+            f'<div class="inv-lv-fill {lv_cls}" style="width:{pct}%"></div>'
+            f'</div>'
+            f'<div class="mob-inv-nums">'
+            f'<span>🏭 {m["stock_warehouse"]}</span>'
+            f'<span>🔧 {m["stock_field"]}</span>'
+            f'<span style="{min_style}">Min: {m["stock_min"]}</span>'
+            f'</div>'
+            f'</div>'
+            f'</div>'
+        )
+
+    mob_inv_list = (
+        f'<div class="mob-only" id="mob-inv-list">'
+        f'{mob_items}'
+        f'</div>'
+    )
+
     # ── low-stock panel ──────────────────────────────────────────────────────────
     alert_panel = ""
     if critical:
@@ -57,6 +119,19 @@ def _inventory_page(user):
         low_sty  = "color:var(--s-err);font-weight:700" if is_crit else ""
         crit_ico = " ⚠️" if is_crit else ""
         crit_row = ' class="nd-crit"' if is_crit else ''
+        _total   = m["stock_warehouse"] + m["stock_field"]
+        _pct     = min(100, int(_total / max(m["stock_min"], 1) * 100))
+        if _pct >= 100:
+            _lv_cls = "lv-hi"
+        elif _pct >= 50:
+            _lv_cls = "lv-md"
+        else:
+            _lv_cls = "lv-lo"
+        _lv_bar  = (
+            f'<div class="inv-lv-bar">'
+            f'<div class="inv-lv-fill {_lv_cls}" style="width:{_pct}%"></div>'
+            f'</div>'
+        )
         rows += (
             f'<tr{crit_row} data-name="{_esc((m["name"]+m["code"]).lower())}" '
             f'data-cat="{_esc(m["category"] or "")}" '
@@ -71,6 +146,7 @@ def _inventory_page(user):
             f'<td style="text-align:center" class="col-m-hide">{m["stock_warehouse"]+m["stock_field"]}</td>'
             f'<td style="text-align:center" class="col-m-hide">{m["stock_min"] or "—"}</td>'
             f'<td class="muted col-m-hide">{_esc(m["unit"])}</td>'
+            f'<td class="col-m-hide" style="min-width:70px">{_lv_bar}</td>'
             f'<td style="white-space:nowrap">'
             f'<div style="display:flex;align-items:center;gap:2px">'
             f'<button class="btn btn-ghost btn-icon" title="Ajustar stock" '
@@ -141,7 +217,7 @@ def _inventory_page(user):
                 f'<td>{active_badge} {edit_btn}</td>'
                 f'</tr>')
 
-    empty_mats = ('<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">'
+    empty_mats = ('<tr><td colspan="10" class="muted" style="text-align:center;padding:24px">'
                   'Sin materiales</td></tr>')
     empty_mvs  = ('<tr><td colspan="6" class="muted" style="text-align:center;padding:16px">'
                   'Sin movimientos</td></tr>')
@@ -158,6 +234,7 @@ def _inventory_page(user):
 
     content = f"""
 {alert_panel}
+{kpi_html}
 <div class="toolbar">
   <h1>📦 Inventario</h1>
   <div style="display:flex;gap:8px">
@@ -191,14 +268,16 @@ def _inventory_page(user):
   <span id="inv-count" class="muted" style="font-size:.8rem;margin-left:auto"></span>
 </div>
 
-<div class="card" style="padding:0">
+{mob_inv_list}
+
+<div class="card desk-only" style="padding:0">
 <div class="tbl-wrap"><table id="inv-table"><thead><tr>
   <th>Código</th><th>Nombre</th><th class="col-m-hide">Categoría</th>
   <th style="text-align:center">Almacén</th>
   <th style="text-align:center">Campo</th>
   <th style="text-align:center" class="col-m-hide">Total</th>
   <th style="text-align:center" class="col-m-hide">Mínimo</th>
-  <th class="col-m-hide">Ud</th><th></th>
+  <th class="col-m-hide">Ud</th><th class="col-m-hide">Nivel</th><th></th>
 </tr></thead>
 <tbody id="inv-tbody">{rows or empty_mats}</tbody>
 </table></div>
@@ -410,6 +489,14 @@ function filterMats(){{
     var ok=(!q||name.includes(q))&&(!cat||rc===cat)&&(!crit||isCrit);
     r.style.display=ok?'':'none';
     if(ok)shown++;
+  }});
+  // also filter mobile items
+  document.querySelectorAll('#mob-inv-list .mob-inv-item').forEach(function(r){{
+    var name=(r.dataset.name||'');
+    var rc=(r.dataset.cat||'').toLowerCase();
+    var isCrit=r.dataset.crit==='1';
+    var ok=(!q||name.includes(q))&&(!cat||rc===cat)&&(!crit||isCrit);
+    r.style.display=ok?'':'none';
   }});
   document.getElementById('inv-count').textContent=shown+' resultado'+(shown!==1?'s':'');
 }}
