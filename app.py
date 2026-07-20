@@ -383,6 +383,7 @@ MIGRATIONS = [
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         UNIQUE(task_id, depends_on)
     )""",
+    "ALTER TABLE wo_extras ADD COLUMN procurement_status TEXT NOT NULL DEFAULT 'to_order'",
     # Plantillas de proyecto reutilizables
     """CREATE TABLE IF NOT EXISTS project_templates (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -393,6 +394,19 @@ MIGRATIONS = [
         tasks_json      TEXT DEFAULT '[]',
         created_by      INTEGER REFERENCES users(id),
         created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    """CREATE TABLE IF NOT EXISTS personal_events (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title       TEXT NOT NULL,
+        event_date  TEXT NOT NULL,
+        date_end    TEXT DEFAULT '',
+        all_day     INTEGER NOT NULL DEFAULT 1,
+        hour_start  INTEGER,
+        hour_end    INTEGER,
+        event_type  TEXT NOT NULL DEFAULT 'training',
+        notes       TEXT DEFAULT '',
+        created_at  TEXT DEFAULT (datetime('now'))
     )""",
 ]
 
@@ -522,7 +536,7 @@ def _project_detail(user, pid):
         FROM wo_comments wc JOIN users u ON u.id=wc.user_id
         WHERE wc.project_id=? ORDER BY wc.created_at ASC""", (pid,)))
 
-    extras = rs(q("""SELECT we.*,u.display_name uname
+    extras = rs(q("""SELECT we.*,COALESCE(we.procurement_status,'to_order') procurement_status,u.display_name uname
         FROM wo_extras we LEFT JOIN users u ON u.id=we.added_by
         WHERE we.project_id=? ORDER BY we.created_at DESC""", (pid,)))
 
@@ -563,7 +577,7 @@ def _project_detail(user, pid):
         safe_t = {k: v for k, v in dict(t).items() if isinstance(v, (str, int, float, type(None)))}
         t_rows += (f'<tr{t_crit}><td>'
             f'<button class="btn btn-ghost btn-icon" style="{done_btn_style}" '
-            f'onclick="toggleTask({t["id"]},{json.dumps(t["status"])})" title="Toggle estado">✓</button></td>'
+            f'onclick="toggleTask({t["id"]},{_jattr(t["status"])})" title="Toggle estado">✓</button></td>'
             f'<td><span class="fw7">{_esc(t["title"])}</span>{cl_html}'
             f'{dep_html}'
             f'{"<br><span class=muted style=font-size:.75rem>"+_esc(t["description"])+"</span>" if t.get("description") else ""}</td>'
@@ -572,14 +586,14 @@ def _project_detail(user, pid):
             f'<td class="muted col-m-hide">{_esc((t["due_date"] or "—")[:10])}</td>'
             f'<td style="white-space:nowrap">'
             f'<button class="btn btn-ghost btn-icon" style="{cm_style};font-size:.78rem" '
-            f'onclick="openTaskComments({t["id"]},{json.dumps(t["title"])})" title="Comentarios">{cm_lbl}</button>'
-            f'<button class="btn btn-ghost btn-icon" onclick="openChecklist({t["id"]},{json.dumps(t["title"])})" title="Checklist">☑</button>'
+            f'onclick="openTaskComments({t["id"]},{_jattr(t["title"])})" title="Comentarios">{cm_lbl}</button>'
+            f'<button class="btn btn-ghost btn-icon" onclick="openChecklist({t["id"]},{_jattr(t["title"])})" title="Checklist">☑</button>'
             f'<div class="nd-ovfl-wrap" style="display:inline-block">'
             f'<button class="btn btn-ghost btn-icon" onclick="ndOverflow(this)" title="Más opciones">⋯</button>'
             f'<div class="nd-ovfl-drop">'
-            f'<button class="nd-ovfl-item" onclick="openTaskComments({t["id"]},{json.dumps(t["title"])})">💬 Comentarios</button>'
-            f'<button class="nd-ovfl-item" onclick="openTaskPhotos({t["id"]},{json.dumps(t["title"])})">📷 Fotos</button>'
-            f'<button class="nd-ovfl-item" onclick="editTask({json.dumps(safe_t)})">✏️ Editar</button>'
+            f'<button class="nd-ovfl-item" onclick="openTaskComments({t["id"]},{_jattr(t["title"])})">💬 Comentarios</button>'
+            f'<button class="nd-ovfl-item" onclick="openTaskPhotos({t["id"]},{_jattr(t["title"])})">📷 Fotos</button>'
+            f'<button class="nd-ovfl-item" onclick="editTask({_jattr(safe_t)})">✏️ Editar</button>'
             f'<button class="nd-ovfl-item danger" onclick="delTask({t["id"]})">✕ Eliminar</button>'
             f'</div></div>'
             f'</td></tr>')
@@ -594,7 +608,7 @@ def _project_detail(user, pid):
             f'<td style="text-align:center">{a["qty_returned"]}</td>'
             f'<td>{_badge2(a["status"])}</td>'
             f'<td class="muted col-m-hide">{_esc(a["mat_unit"])}</td>'
-            f'<td><button class="btn btn-ghost btn-icon" onclick="updateAssign({a["id"]},{json.dumps(dict(a))})">⚙️</button></td></tr>')
+            f'<td><button class="btn btn-ghost btn-icon" onclick="updateAssign({a["id"]},{_jattr(dict(a))})">⚙️</button></td></tr>')
 
     # ── work log ──
     log_items = ""
@@ -751,16 +765,43 @@ def _project_detail(user, pid):
   </tr></thead><tbody>{wl_rows or "<tr><td colspan='5' class='muted' style='text-align:center;padding:16px'>Sin registros</td></tr>"}</tbody></table></div>
 </div>"""
 
-    # ── build extras tab HTML ──
-    extra_rows = ""
+    # ── procurement status badge ──
+    _proc_labels = {"to_order":"Por pedir","ordered":"Pedido","received":"Recibido"}
+    _proc_colors = {"to_order":"#f59e0b","ordered":"#3b82f6","received":"#22c55e"}
+    def _proc_badge(s):
+        lbl = _proc_labels.get(s, s)
+        clr = _proc_colors.get(s, "#94a3b8")
+        return f'<span style="background:{clr}20;color:{clr};border:1px solid {clr}40;border-radius:4px;padding:1px 7px;font-size:.75rem;font-weight:600;white-space:nowrap">{lbl}</span>'
+
+    # ── unified material rows (stock assignments + external extras) ──
+    mat_rows = ""
+    for a in assignments:
+        mat_rows += (
+            f'<tr>'
+            f'<td><span class="chip">{_esc(a["mat_code"])}</span> {_esc(a["mat_name"])}</td>'
+            f'<td style="text-align:center"><span style="background:var(--bg3);color:var(--fg);border-radius:4px;padding:1px 7px;font-size:.75rem;font-weight:600">🏭 Stock</span></td>'
+            f'<td style="text-align:center">{a["qty_requested"]}<span class="muted" style="font-size:.75rem"> / {a["qty_consumed"]} cons.</span></td>'
+            f'<td>{_badge2(a["status"])}</td>'
+            f'<td class="muted">{_esc(a["mat_unit"])}</td>'
+            f'<td><button class="btn btn-ghost btn-icon" title="Editar" onclick="openEditAssign({a["id"]},{_jattr(dict(a))})">⚙️</button></td>'
+            f'</tr>'
+        )
     for ex in extras:
-        extra_rows += (f'<tr>'
-            f'<td>{_esc(ex["description"])}</td>'
-            f'<td style="text-align:center">{ex["quantity"]}</td>'
-            f'<td>{_esc(ex["unit"])}</td>'
-            f'<td class="muted col-m-hide" style="font-size:.8rem">{_esc(ex.get("notes","") or "")}</td>'
-            f'<td class="muted col-m-hide" style="font-size:.75rem">{_esc(ex.get("uname","") or "")}</td>'
-            f'<td><button class="btn btn-danger btn-icon" onclick="delExtra({ex["id"]})">✕</button></td></tr>')
+        ps = ex.get("procurement_status") or "to_order"
+        notes_tip = f' title="{_esc(ex.get("notes","") or "")}"' if ex.get("notes") else ""
+        mat_rows += (
+            f'<tr>'
+            f'<td{notes_tip}>{_esc(ex["description"])}</td>'
+            f'<td style="text-align:center"><span style="background:#8b5cf620;color:#8b5cf6;border:1px solid #8b5cf640;border-radius:4px;padding:1px 7px;font-size:.75rem;font-weight:600">🛒 Externo</span></td>'
+            f'<td style="text-align:center">{ex["quantity"]} <span class="muted" style="font-size:.75rem">{_esc(ex["unit"])}</span></td>'
+            f'<td>{_proc_badge(ps)}</td>'
+            f'<td class="muted">—</td>'
+            f'<td style="display:flex;gap:4px">'
+            f'<button class="btn btn-ghost btn-icon" title="Editar" onclick="openEditExtra({ex["id"]},{_jattr(dict(ex))})">⚙️</button>'
+            f'<button class="btn btn-danger btn-icon" title="Eliminar" onclick="delExtra({ex["id"]})">✕</button>'
+            f'</td>'
+            f'</tr>'
+        )
 
     eq_rows = ""
     for eq in equipment:
@@ -772,23 +813,20 @@ def _project_detail(user, pid):
             f'<td class="muted col-m-hide" style="font-size:.8rem">{_esc(eq.get("notes","") or "")}</td>'
             f'<td><button class="btn btn-danger btn-icon" onclick="delEquipment({eq["id"]})">✕</button></td></tr>')
 
+    _total_mat = len(assignments) + len(extras)
     extras_tab_html = f"""
-<div class="card">
-  <h3 style="margin-bottom:4px">Extras / Materiales fuera de scope</h3>
-  <p class="muted" style="font-size:.8rem;margin-bottom:12px">Materiales o trabajos no incluidos en el alcance original</p>
-  <div class="inline-add" id="extra-add">
-    <div class="row">
-      <div class="field"><label>Descripción</label><input id="ex-desc" placeholder="Ej: Cable UTP extra 15m"></div>
-      <div class="field" style="flex:0 0 90px"><label>Cantidad</label><input type="number" id="ex-qty" value="1" min="0" step="0.01"></div>
-      <div class="field" style="flex:0 0 80px"><label>Unidad</label><input id="ex-unit" value="ud"></div>
-      <div class="field"><label>Notas</label><input id="ex-notes" placeholder="Motivo, detalle..."></div>
-      <button class="btn btn-primary btn-sm" onclick="addExtra()">+ Añadir</button>
+<div class="card" id="mat-section">
+  <div class="toolbar" style="margin-bottom:12px">
+    <div>
+      <h3 style="margin:0">Materiales del proyecto ({_total_mat})</h3>
+      <p class="muted" style="font-size:.78rem;margin:2px 0 0">Stock del almacén y material externo/pendiente de pedido</p>
     </div>
+    <button class="btn btn-primary btn-sm" onclick="openMatModal('stock')">+ Material</button>
   </div>
   <div class="tbl-wrap"><table><thead><tr>
-    <th>Descripción</th><th style="text-align:center">Cant.</th><th>Ud</th>
-    <th class="col-m-hide">Notas</th><th class="col-m-hide">Técnico</th><th></th>
-  </tr></thead><tbody>{extra_rows or "<tr><td colspan='6' class='muted' style='text-align:center;padding:16px'>Sin extras registrados</td></tr>"}</tbody></table></div>
+    <th>Material / Descripción</th><th>Tipo</th><th style="text-align:center">Cantidad</th>
+    <th>Estado</th><th>Ud</th><th></th>
+  </tr></thead><tbody>{mat_rows or "<tr><td colspan='6' class='muted' style='text-align:center;padding:20px'>Sin materiales registrados — usa + Material para añadir</td></tr>"}</tbody></table></div>
 </div>
 
 <div class="card">
@@ -910,7 +948,7 @@ def _project_detail(user, pid):
         "due_date": t.get("due_date","") or "",
         "start_date": t.get("start_date","") or "",
         "created_at": (t.get("created_at","") or "")[:10],
-    } for t in tasks], ensure_ascii=False)
+    } for t in tasks], ensure_ascii=False).replace('</', '<\\/')
     task_dep_opts = "".join(
         f'<option value="{t["id"]}">{_esc(t["title"][:60])}</option>' for t in tasks)
 
@@ -930,7 +968,7 @@ def _project_detail(user, pid):
         _due_lbl  = f'<span style="font-size:.72rem;color:var(--muted)">{_esc((_t.get("due_date") or "")[:10])}</span>' if _t.get("due_date") else ''
         _mob_task_rows += (
             f'<div class="mob-task-item{_done_cls}">'
-            f'<input type="checkbox"{_checked} onchange="toggleTask({_t["id"]},{json.dumps(_t["status"])})">'
+            f'<input type="checkbox"{_checked} onchange="toggleTask({_t["id"]},{_jattr(_t["status"])})">'
             f'<div><div class="mob-task-name">{_esc(_t["title"])}</div>{_due_lbl}</div>'
             f'</div>'
         )
@@ -1109,7 +1147,7 @@ function mobTab(btn, panelId) {{
     </div>
     <div class="proj-hd-actions">
       <a href="{BP}/projects/{pid}/report" target="_blank" class="btn btn-ghost btn-sm">🖨 Informe</a>
-      <a href="{BP}/projects/{pid}/parte" target="_blank" class="btn btn-ghost btn-sm">📄 Parte</a>
+      <button class="btn btn-ghost btn-sm" onclick="showTab('recursos',document.querySelector('.tab-btn:nth-child(2)'));setTimeout(function(){{document.getElementById('mat-section').scrollIntoView({{behavior:'smooth',block:'start'}});openMatModal('stock');}},80)">📦 Material</button>
       <a href="{BP}/projects/{pid}/albaran" target="_blank" class="btn btn-ghost btn-sm">🧾 Albarán</a>
       <button class="btn btn-ghost btn-sm" onclick="openSigModal()">✍️ Firma</button>
       <button class="btn btn-ghost btn-sm" onclick="showSaveTemplateModal()">💾 Plantilla</button>
@@ -1207,19 +1245,6 @@ function mobTab(btn, panelId) {{
 {kit_tab_html}
 
 {extras_tab_html}
-
-<div class="card">
-  <div class="toolbar" style="margin-bottom:12px">
-    <h3>Materiales asignados ({len(assignments)})</h3>
-    <button class="btn btn-primary btn-sm" onclick="openNewAssign()">+ Material</button>
-  </div>
-  <div class="tbl-wrap"><table><thead><tr>
-    <th>Material</th><th style="text-align:center">Solicitado</th>
-    <th style="text-align:center">Asignado</th><th style="text-align:center">Consumido</th>
-    <th style="text-align:center">Devuelto</th><th>Estado</th>
-    <th class="col-m-hide">Ud</th><th></th>
-  </tr></thead><tbody>{a_rows or "<tr><td colspan='8' class='muted' style='text-align:center;padding:20px'>Sin materiales asignados</td></tr>"}</tbody></table></div>
-</div>
 
 </div>
 
@@ -1423,34 +1448,60 @@ function mobTab(btn, panelId) {{
 </div></div>
 
 <!-- MODAL material asignado -->
-<div class="modal-bg" id="assign-modal">
-<div class="modal">
-  <h2 id="assign-modal-title">Asignar material</h2>
-  <form id="assign-form">
-  <input type="hidden" id="assign-id">
-  <div class="form-row single">
-    <div><label>Material</label><select id="a-mat">{mat_opts}</select>
-    <span id="a-stock-info" style="font-size:.75rem;color:var(--muted);margin-top:4px;display:block"></span>
+<div class="modal-bg" id="mat-modal">
+<div class="modal" style="max-width:500px">
+  <h2 id="mat-modal-title">Material del proyecto</h2>
+  <div id="mat-tabs" style="display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:12px">
+    <button id="mat-tab-stock" class="btn btn-primary btn-sm" onclick="switchMatTab('stock')">🏭 Del almacén</button>
+    <button id="mat-tab-ext" class="btn btn-ghost btn-sm" onclick="switchMatTab('ext')">🛒 Sin stock / Pedir</button>
+  </div>
+  <!-- Panel stock -->
+  <form id="mat-stock-panel">
+    <input type="hidden" id="assign-id">
+    <div class="form-row single">
+      <div><label>Material</label><select id="a-mat">{mat_opts}</select>
+      <span id="a-stock-info" style="font-size:.75rem;color:var(--muted);margin-top:4px;display:block"></span>
+      </div>
     </div>
-  </div>
-  <div class="form-row">
-    <div><label>Solicitado</label><input type="number" id="a-req" min="0" value="1"></div>
-    <div><label>Asignado</label><input type="number" id="a-asgn" min="0" value="0"></div>
-  </div>
-  <div class="form-row">
-    <div><label>Consumido</label><input type="number" id="a-cons" min="0" value="0"></div>
-    <div><label>Devuelto</label><input type="number" id="a-ret" min="0" value="0"></div>
-  </div>
-  <div class="form-row single"><div><label>Estado</label><select id="a-status">
-    <option value="requested">Solicitado</option><option value="assigned">Asignado</option>
-    <option value="consumed">Consumido</option><option value="returned">Devuelto</option>
-    <option value="partial">Parcial</option>
-  </select></div></div>
-  <div class="form-row single"><label>Notas</label><textarea id="a-notes"></textarea></div>
-  <div class="modal-foot">
-    <button type="button" class="btn btn-ghost" onclick="closeAssignModal()">Cancelar</button>
-    <button type="submit" class="btn btn-primary">Guardar</button>
-  </div>
+    <div class="form-row">
+      <div><label>Solicitado</label><input type="number" id="a-req" min="0" value="1"></div>
+      <div><label>Asignado</label><input type="number" id="a-asgn" min="0" value="0"></div>
+    </div>
+    <div class="form-row">
+      <div><label>Consumido</label><input type="number" id="a-cons" min="0" value="0"></div>
+      <div><label>Devuelto</label><input type="number" id="a-ret" min="0" value="0"></div>
+    </div>
+    <div class="form-row single"><div><label>Estado</label><select id="a-status">
+      <option value="requested">Solicitado</option><option value="assigned">Asignado</option>
+      <option value="consumed">Consumido</option><option value="returned">Devuelto</option>
+      <option value="partial">Parcial</option>
+    </select></div></div>
+    <div class="form-row single"><label>Notas</label><textarea id="a-notes" rows="2"></textarea></div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" onclick="closeMatModal()">Cancelar</button>
+      <button type="submit" class="btn btn-primary">Guardar</button>
+    </div>
+  </form>
+  <!-- Panel externo -->
+  <form id="mat-ext-panel" style="display:none">
+    <input type="hidden" id="ext-id">
+    <div class="form-row single">
+      <div><label>Descripción *</label><input id="ext-desc" placeholder="Ej: Cable HDMI 2m, Switch adicional..."></div>
+    </div>
+    <div class="form-row">
+      <div><label>Cantidad</label><input type="number" id="ext-qty" min="0" step="0.01" value="1"></div>
+      <div><label>Unidad</label><input id="ext-unit" value="ud"></div>
+    </div>
+    <div class="form-row single"><div><label>Estado</label><select id="ext-status">
+      <option value="to_order">🟡 Por pedir</option>
+      <option value="ordered">🔵 Pedido</option>
+      <option value="received">🟢 Recibido</option>
+    </select></div></div>
+    <div class="form-row single"><label>Notas (proveedor, referencia...)</label><textarea id="ext-notes" rows="2"></textarea></div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-ghost" onclick="closeMatModal()">Cancelar</button>
+      <button type="submit" class="btn btn-primary">Guardar</button>
+    </div>
   </form>
 </div></div>
 
@@ -1822,29 +1873,17 @@ function loadClTemplate(){{
   }}else{{doLoad();}}
 }}
 
-// ── log ──
-function updateLogPreview(){{
-  var h=parseFloat(document.getElementById('log-hours').value)||0;
-  var t=parseInt(document.getElementById('log-techs').value)||1;
-  var el=document.getElementById('log-ph-preview');
-  if(h>0&&t>1) el.textContent='→ '+( h*t).toFixed(1)+' person-horas';
-  else el.textContent='';
+// ── unified material modal ──
+var _matActiveTab='stock';
+function switchMatTab(tab){{
+  _matActiveTab=tab;
+  document.getElementById('mat-stock-panel').style.display=tab==='stock'?'':'none';
+  document.getElementById('mat-ext-panel').style.display=tab==='ext'?'':'none';
+  document.getElementById('mat-tab-stock').className=tab==='stock'?'btn btn-primary btn-sm':'btn btn-ghost btn-sm';
+  document.getElementById('mat-tab-ext').className=tab==='ext'?'btn btn-primary btn-sm':'btn btn-ghost btn-sm';
 }}
-document.getElementById('log-hours').addEventListener('input',updateLogPreview);
-document.getElementById('log-techs').addEventListener('change',updateLogPreview);
-function addLog(){{
-  var body=document.getElementById('log-body').value.trim();
-  if(!body) return;
-  var hours=parseFloat(document.getElementById('log-hours').value)||0;
-  var techs=parseInt(document.getElementById('log-techs').value)||1;
-  fetch(bp+'/api/projects/'+pid+'/log',{{method:'POST',headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{body:body,hours:hours,technicians:techs}})}})
-    .then(function(r){{if(r.ok)location.reload();}});
-}}
-
-// ── assignments ──
-function openNewAssign(){{
-  document.getElementById('assign-modal-title').textContent='Asignar material';
+function openMatModal(tab){{
+  document.getElementById('mat-modal-title').textContent='Añadir material';
   document.getElementById('assign-id').value='';
   document.getElementById('a-mat').disabled=false;
   document.getElementById('a-req').value=1;
@@ -1853,11 +1892,19 @@ function openNewAssign(){{
   document.getElementById('a-ret').value=0;
   document.getElementById('a-status').value='requested';
   document.getElementById('a-notes').value='';
+  document.getElementById('ext-id').value='';
+  document.getElementById('ext-desc').value='';
+  document.getElementById('ext-qty').value=1;
+  document.getElementById('ext-unit').value='ud';
+  document.getElementById('ext-status').value='to_order';
+  document.getElementById('ext-notes').value='';
+  document.getElementById('mat-tabs').style.display='flex';
+  switchMatTab(tab||'stock');
   updateStockInfo();
-  document.getElementById('assign-modal').classList.add('open');
+  document.getElementById('mat-modal').classList.add('open');
 }}
-function updateAssign(id,a){{
-  document.getElementById('assign-modal-title').textContent='Actualizar material';
+function openEditAssign(id,a){{
+  document.getElementById('mat-modal-title').textContent='Actualizar material de stock';
   document.getElementById('assign-id').value=id;
   document.getElementById('a-mat').value=a.material_id;
   document.getElementById('a-mat').disabled=true;
@@ -1867,11 +1914,25 @@ function updateAssign(id,a){{
   document.getElementById('a-ret').value=a.qty_returned;
   document.getElementById('a-status').value=a.status;
   document.getElementById('a-notes').value=a.notes||'';
+  document.getElementById('mat-tabs').style.display='none';
+  switchMatTab('stock');
   updateStockInfo();
-  document.getElementById('assign-modal').classList.add('open');
+  document.getElementById('mat-modal').classList.add('open');
 }}
-function closeAssignModal(){{document.getElementById('assign-modal').classList.remove('open');}}
-document.getElementById('assign-modal').onclick=function(e){{if(e.target===this)closeAssignModal();}};
+function openEditExtra(id,ex){{
+  document.getElementById('mat-modal-title').textContent='Actualizar material externo';
+  document.getElementById('ext-id').value=id;
+  document.getElementById('ext-desc').value=ex.description||'';
+  document.getElementById('ext-qty').value=ex.quantity||1;
+  document.getElementById('ext-unit').value=ex.unit||'ud';
+  document.getElementById('ext-status').value=ex.procurement_status||'to_order';
+  document.getElementById('ext-notes').value=ex.notes||'';
+  document.getElementById('mat-tabs').style.display='none';
+  switchMatTab('ext');
+  document.getElementById('mat-modal').classList.add('open');
+}}
+function closeMatModal(){{document.getElementById('mat-modal').classList.remove('open');}}
+document.getElementById('mat-modal').onclick=function(e){{if(e.target===this)closeMatModal();}};
 function updateStockInfo(){{
   var sel=document.getElementById('a-mat');
   var opt=sel.options[sel.selectedIndex];
@@ -1879,20 +1940,13 @@ function updateStockInfo(){{
   var sm=opt?parseInt(opt.getAttribute('data-stockmin')||'0'):0;
   var req=parseInt(document.getElementById('a-req').value)||0;
   var el=document.getElementById('a-stock-info');
-  if(req>s){{
-    el.textContent='⚠️ Stock insuficiente: '+s+' ud en almacén (solicitado: '+req+')';
-    el.style.color='var(--s-err)';
-  }}else if(sm>0&&s<=sm){{
-    el.textContent='⚠️ Stock bajo ('+s+'/'+sm+' mínimo). Confirma antes de asignar.';
-    el.style.color='var(--s-warn)';
-  }}else{{
-    el.textContent='Stock en almacén: '+s+' ud';
-    el.style.color='var(--muted)';
-  }}
+  if(req>s){{el.textContent='⚠️ Stock insuficiente: '+s+' ud en almacén (solicitado: '+req+')';el.style.color='var(--s-err)';}}
+  else if(sm>0&&s<=sm){{el.textContent='⚠️ Stock bajo ('+s+'/'+sm+' mínimo). Confirma.';el.style.color='var(--s-warn)';}}
+  else{{el.textContent='Stock en almacén: '+s+' ud';el.style.color='var(--muted)';}}
 }}
 document.getElementById('a-req').oninput=updateStockInfo;
 document.getElementById('a-mat').onchange=updateStockInfo;
-document.getElementById('assign-form').onsubmit=function(e){{
+document.getElementById('mat-stock-panel').onsubmit=function(e){{
   e.preventDefault();
   var id=document.getElementById('assign-id').value;
   var d={{material_id:document.getElementById('a-mat').value,
@@ -1905,7 +1959,26 @@ document.getElementById('assign-form').onsubmit=function(e){{
   fetch(url,{{method:id?'PUT':'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
     .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{Toast.show(j.error||'Error','err');}});}});
 }};
+document.getElementById('mat-ext-panel').onsubmit=function(e){{
+  e.preventDefault();
+  var id=document.getElementById('ext-id').value;
+  var desc=document.getElementById('ext-desc').value.trim();
+  if(!desc){{Toast.show('Escribe una descripción','err');return;}}
+  var d={{description:desc,quantity:parseFloat(document.getElementById('ext-qty').value)||1,
+    unit:document.getElementById('ext-unit').value||'ud',
+    procurement_status:document.getElementById('ext-status').value,
+    notes:document.getElementById('ext-notes').value}};
+  var url=id?bp+'/api/wo_extras/'+id:bp+'/api/projects/'+pid+'/extras';
+  fetch(url,{{method:id?'PUT':'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
+    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{Toast.show(j.error||'Error','err');}});}});
+}};
 updateStockInfo();
+function delExtra(id){{
+  ConfirmDialog.show('¿Eliminar este material?','')
+    .then(function(ok){{if(!ok)return;
+      fetch(bp+'/api/wo_extras/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+    }});
+}}
 
 // ── members ──
 function openAddMember(){{document.getElementById('member-modal').classList.add('open');}}
@@ -2049,24 +2122,6 @@ function saveSignature(){{
     .catch(function(err){{Toast.show(err.message,'err');}});
 }}
 
-// ── extras ──
-function addExtra(){{
-  var desc=document.getElementById('ex-desc').value.trim();
-  if(!desc){{Toast.show('Escribe una descripción','err');return;}}
-  fetch(bp+'/api/projects/'+pid+'/extras',{{method:'POST',
-    headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{description:desc,
-      quantity:parseFloat(document.getElementById('ex-qty').value)||1,
-      unit:document.getElementById('ex-unit').value||'ud',
-      notes:document.getElementById('ex-notes').value}})}})
-    .then(function(r){{if(r.ok)location.reload();else r.json().then(function(j){{Toast.show(j.error||'Error','err');}});}});
-}}
-function delExtra(id){{
-  ConfirmDialog.show('¿Eliminar este extra?','')
-    .then(function(ok){{if(!ok)return;
-      fetch(bp+'/api/wo_extras/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
-    }});
-}}
 
 // ── equipment ──
 function addEquipment(){{
@@ -2285,6 +2340,41 @@ function doSaveTemplate(){{
 
 from web.pages.inventory import _inventory_page
 from web.pages.kit import _kit_page
+
+def _inventory_xlsx() -> bytes:
+    import io, openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    mats = rs(q("""SELECT m.code,m.name,m.description,m.category,m.unit,
+        m.stock_warehouse,m.stock_field,m.stock_min,m.unit_cost,
+        COALESCE((SELECT SUM(sbl.qty) FROM stock_by_location sbl WHERE sbl.material_id=m.id),0) ubicado
+        FROM materials m ORDER BY m.category,m.name"""))
+    wb  = openpyxl.Workbook()
+    ws  = wb.active
+    ws.title = "Materiales"
+    hdr_fill = PatternFill("solid", fgColor="1E40AF")
+    hdr_font = Font(bold=True, color="FFFFFF", size=10)
+    hdrs = ["Código","Nombre","Descripción","Categoría","Unidad",
+            "Stock almacén","Stock campo","Stock mínimo","Coste unit.","Stock ubicado"]
+    ws.append(hdrs)
+    for cell in ws[1]:
+        cell.fill = hdr_fill; cell.font = hdr_font
+        cell.alignment = Alignment(horizontal="center")
+    warn_fill = PatternFill("solid", fgColor="FEF2F2")
+    for m in mats:
+        row = [m["code"],m["name"],m.get("description") or "",m.get("category") or "",
+               m["unit"],m["stock_warehouse"],m["stock_field"],m["stock_min"],
+               m.get("unit_cost") or 0,m["ubicado"]]
+        ws.append(row)
+        if (m["stock_warehouse"] or 0) <= (m["stock_min"] or 0) and (m["stock_min"] or 0) > 0:
+            for cell in ws[ws.max_row]:
+                cell.fill = warn_fill
+    for i, col in enumerate(ws.columns, 1):
+        width = max((len(str(c.value or "")) for c in col), default=8) + 2
+        ws.column_dimensions[get_column_letter(i)].width = min(width, 42)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 from web.pages.users import _users_page
 from web.pages.reports import _project_report, _project_report_md, _project_albaran, _project_parte, _profitability_page
 from web.pages.calendar import _calendar_page, _calendar_week, _calendar_day
@@ -2472,6 +2562,15 @@ self.addEventListener('fetch',function(e){{
             self._send(200 if html else 404, html or "Not found"); return
         if rel == "/inventory":
             self._send(200, _inventory_page(sess)); return
+        if rel == "/api/inventory/export.xlsx":
+            try:
+                xlsx_data = _inventory_xlsx()
+                self._send(200, xlsx_data,
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           extra_headers={"Content-Disposition": "attachment; filename=inventario.xlsx"})
+            except Exception as ex:
+                self._json(500, {"error": str(ex)})
+            return
         if rel == "/kit":
             self._send(200, _kit_page(sess)); return
         if rel == "/calendar":
@@ -2626,6 +2725,34 @@ self.addEventListener('fetch',function(e){{
                 conds.append("a.activity_date BETWEEN ? AND ?"); params += [d1, d2]
             where = ("WHERE " + " AND ".join(conds)) if conds else ""
             rows = rs(q(f"{base_q} {where} ORDER BY a.activity_date,a.hour_start,u.display_name",
+                        tuple(params)))
+            self._json(200, rows); return
+
+        # personal events
+        if rel == "/api/personal_events":
+            yr_f = qs.get("year",[""])[0]
+            mo_f = qs.get("month",[""])[0]
+            ws_f = qs.get("week_start",[""])[0]
+            date_f = qs.get("date",[""])[0]
+            conds, params = [], []
+            if sess.get("role") not in ("admin","backoffice"):
+                conds.append("pe.user_id=?"); params.append(sess["id"])
+            if date_f:
+                conds.append("pe.event_date<=? AND (pe.date_end='' OR pe.date_end IS NULL OR pe.date_end>=?)"); params += [date_f, date_f]
+            elif ws_f:
+                try:
+                    ws = _date.fromisoformat(ws_f)
+                    we = str(ws + timedelta(days=6))
+                    conds.append("pe.event_date<=? AND (pe.date_end='' OR pe.date_end IS NULL OR pe.date_end>=?)"); params += [we, ws_f]
+                except ValueError: pass
+            elif yr_f and mo_f:
+                from calendar import monthrange as _mr
+                _, dm = _mr(int(yr_f), int(mo_f))
+                d1 = f"{int(yr_f):04d}-{int(mo_f):02d}-01"
+                d2 = f"{int(yr_f):04d}-{int(mo_f):02d}-{dm:02d}"
+                conds.append("pe.event_date<=? AND (pe.date_end='' OR pe.date_end IS NULL OR pe.date_end>=?)"); params += [d2, d1]
+            where = ("WHERE " + " AND ".join(conds)) if conds else ""
+            rows = rs(q(f"SELECT pe.*,u.display_name uname FROM personal_events pe JOIN users u ON u.id=pe.user_id {where} ORDER BY pe.event_date,pe.hour_start",
                         tuple(params)))
             self._json(200, rows); return
 
@@ -2917,6 +3044,32 @@ self.addEventListener('fetch',function(e){{
             if warning: resp["warning"] = warning
             self._json(201, resp); return
 
+        # personal events
+        if rel == "/api/personal_events":
+            title = (data.get("title","") or "").strip()
+            if not title:
+                self._json(400, {"error":"El título es obligatorio"}); return
+            event_date = (data.get("event_date","") or "").strip()
+            if not event_date:
+                self._json(400, {"error":"La fecha es obligatoria"}); return
+            if sess.get("role") == "admin" and data.get("user_id"):
+                uid = int(data["user_id"])
+            else:
+                uid = sess["id"]
+            event_type = data.get("event_type","training") or "training"
+            if event_type not in ("training","vendor","presentation","personal","other"):
+                event_type = "other"
+            all_day = 1 if data.get("all_day") else 0
+            hs_raw = data.get("hour_start"); he_raw = data.get("hour_end")
+            hs = int(hs_raw) if hs_raw is not None else None
+            he = int(he_raw) if he_raw is not None else None
+            date_end = (data.get("date_end","") or "").strip()
+            eid = run("""INSERT INTO personal_events
+                (user_id,title,event_date,date_end,all_day,hour_start,hour_end,event_type,notes)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+                (uid, title, event_date, date_end, all_day, hs, he, event_type, data.get("notes","")))
+            self._json(201, {"id": eid}); return
+
         # work logs
         if rel == "/api/work_logs":
             uid_raw = data.get("user_id")
@@ -3164,10 +3317,12 @@ self.addEventListener('fetch',function(e){{
             pid = int(m.group(1))
             desc = (data.get("description","") or "").strip()
             if not desc: self._json(400, {"error":"Descripción requerida"}); return
-            eid = run("""INSERT INTO wo_extras (project_id,description,quantity,unit,notes,added_by)
-                VALUES(?,?,?,?,?,?)""",
+            ps = data.get("procurement_status","to_order")
+            if ps not in ("to_order","ordered","received"): ps = "to_order"
+            eid = run("""INSERT INTO wo_extras (project_id,description,quantity,unit,notes,procurement_status,added_by)
+                VALUES(?,?,?,?,?,?,?)""",
                 (pid, desc, float(data.get("quantity") or 1),
-                 data.get("unit","ud"), data.get("notes",""), sess["id"]))
+                 data.get("unit","ud"), data.get("notes",""), ps, sess["id"]))
             self._json(201, {"id":eid}); return
 
         # equipment
@@ -3517,6 +3672,19 @@ self.addEventListener('fetch',function(e){{
                         f"Devuelto del kit usuario {ki['user_id']}")
             self._json(200, {"ok":True}); return
 
+        # wo_extras update
+        m = re.match(r"^/api/wo_extras/(\d+)$", rel)
+        if m:
+            eid = int(m.group(1))
+            desc = (data.get("description","") or "").strip()
+            if not desc: self._json(400, {"error":"Descripción requerida"}); return
+            ps = data.get("procurement_status","to_order")
+            if ps not in ("to_order","ordered","received"): ps = "to_order"
+            run("UPDATE wo_extras SET description=?,quantity=?,unit=?,notes=?,procurement_status=? WHERE id=?",
+                (desc, float(data.get("quantity") or 1), data.get("unit","ud"),
+                 data.get("notes",""), ps, eid))
+            self._json(200, {"ok":True}); return
+
         # users
         if rel == "/api/users":
             if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
@@ -3786,7 +3954,9 @@ self.addEventListener('fetch',function(e){{
         # settings
         if rel == "/api/settings":
             if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
-            _allowed = {"smtp_host","smtp_port","smtp_user","smtp_pass","smtp_from","smtp_tls","notif_due_days"}
+            _allowed = {"smtp_host","smtp_port","smtp_user","smtp_pass","smtp_from","smtp_tls","notif_due_days",
+                        "company_name","company_cif","company_address","company_city",
+                        "company_phone","company_email","company_web"}
             for k, v in data.items():
                 if k in _allowed:
                     set_setting(k, str(v))
@@ -3827,6 +3997,8 @@ self.addEventListener('fetch',function(e){{
             try:
                 # schedule_slots has no ON DELETE CASCADE — clear manually
                 run("DELETE FROM schedule_slots WHERE project_id=?", (pid,))
+                run("DELETE FROM notifications WHERE url=? OR url LIKE ?",
+                    (f"{BP}/projects/{pid}", f"{BP}/projects/{pid}/%"))
                 run("DELETE FROM projects WHERE id=?", (pid,))
                 self._json(200, {"ok": True})
             except Exception as ex:
@@ -3943,6 +4115,16 @@ self.addEventListener('fetch',function(e){{
         if m:
             if sess.get("role") != "admin": self._json(403, {"error":"Forbidden"}); return
             run("DELETE FROM activities WHERE id=?", (int(m.group(1)),))
+            self._json(200, {"ok":True}); return
+
+        m = re.match(r"^/api/personal_events/(\d+)$", rel)
+        if m:
+            eid = int(m.group(1))
+            ev = r2d(q1("SELECT user_id FROM personal_events WHERE id=?", (eid,)))
+            if not ev: self._json(404, {"error":"Not found"}); return
+            if ev["user_id"] != sess["id"] and sess.get("role") != "admin":
+                self._json(403, {"error":"Forbidden"}); return
+            run("DELETE FROM personal_events WHERE id=?", (eid,))
             self._json(200, {"ok":True}); return
 
         m = re.match(r"^/api/project_files/(\d+)$", rel)

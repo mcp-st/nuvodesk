@@ -11,6 +11,10 @@ _DOW_SHORT   = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
 _DOW_FULL    = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
 _TYPE_ICON   = {"physical":"⚡","online":"🌐","meeting":"👥","travel":"✈️","other":"📌"}
 _TYPE_LABEL  = {"physical":"Presencial","online":"Online","meeting":"Reunión","travel":"Viaje","other":"Otro"}
+
+_PEVENT_ICON  = {"training":"🎓","vendor":"🤝","presentation":"📢","personal":"👤","other":"📌"}
+_PEVENT_LABEL = {"training":"Formación","vendor":"Proveedor","presentation":"Presentación","personal":"Personal","other":"Otro"}
+_PEVENT_COLOR = "#d97706"  # amber — distinguishable from project activities
 _AVAIL_ICON  = {"available":"","remote":"🏠","traveling":"✈️","off":"—",
                 "vacation":"🏖","day_off":"📅","sick":"🤒"}
 _AVAIL_LABEL = {"available":"Disponible","remote":"Remoto","traveling":"Desplazado","off":"Libre",
@@ -171,6 +175,92 @@ def _type_options():
 def _user_options(exclude_roles=("backoffice",)):
     users = rs(q("SELECT id,display_name FROM users WHERE active=1 ORDER BY display_name"))
     return "".join(f'<option value="{u["id"]}">{_esc(u["display_name"])}</option>' for u in users)
+
+
+def _pevent_type_options():
+    return "".join(
+        f'<option value="{k}">{_PEVENT_ICON[k]} {v}</option>'
+        for k, v in _PEVENT_LABEL.items())
+
+
+def _personal_event_modal(today_str, is_admin, pfx="pem"):
+    admin_user_row = ""
+    if is_admin:
+        admin_user_row = (
+            f'<div class="form-row single"><div><label>Técnico</label>'
+            f'<select id="{pfx}-user">{_user_options()}</select></div></div>'
+        )
+    return f"""
+<div class="modal-bg" id="pev-modal">
+<div class="modal" style="max-width:480px">
+  <h2>Nuevo evento personal</h2>
+  {admin_user_row}
+  <div class="form-row single">
+    <div><label>Título</label><input id="{pfx}-title" placeholder="Ej: Formación Cisco, Reunión proveedor…"></div>
+  </div>
+  <div class="form-row">
+    <div><label>Tipo</label><select id="{pfx}-type">{_pevent_type_options()}</select></div>
+  </div>
+  <div class="form-row">
+    <div><label>Fecha inicio</label><input type="date" id="{pfx}-date" value="{today_str}"></div>
+    <div><label>Fecha fin (opcional)</label><input type="date" id="{pfx}-date-end"></div>
+  </div>
+  <div class="form-row single">
+    <div><label><input type="checkbox" id="{pfx}-allday" onchange="togglePevAllDay()" checked> Todo el día</label></div>
+  </div>
+  <div class="form-row" id="{pfx}-hours-row" style="display:none">
+    <div><label>Hora inicio</label><select id="{pfx}-hs">{_hour_select_start()}</select></div>
+    <div><label>Hora fin</label><select id="{pfx}-he">{_hour_select_end()}</select></div>
+  </div>
+  <div class="form-row single"><div><label>Notas</label><input id="{pfx}-notes" placeholder="Opcional"></div></div>
+  <div class="modal-foot">
+    <button type="button" class="btn btn-ghost"
+      onclick="document.getElementById('pev-modal').classList.remove('open')">Cancelar</button>
+    <button class="btn btn-primary" onclick="doCreatePev()">Guardar</button>
+  </div>
+</div></div>"""
+
+
+def _personal_event_js(is_admin, pfx="pem"):
+    user_field = (f"user_id:document.getElementById('{pfx}-user').value,"
+                  if is_admin else "")
+    return f"""
+document.getElementById('pev-modal').onclick=function(e){{if(e.target===this)this.classList.remove('open');}};
+function togglePevAllDay(){{
+  var ad=document.getElementById('{pfx}-allday');
+  var row=document.getElementById('{pfx}-hours-row');
+  if(row) row.style.display=ad.checked?'none':'';
+}}
+function doCreatePev(){{
+  var title=document.getElementById('{pfx}-title').value.trim();
+  if(!title){{Toast.show('El título es obligatorio','err');return;}}
+  var ad=document.getElementById('{pfx}-allday');
+  var allday=ad?ad.checked:true;
+  var d={{
+    {user_field}
+    title:title,
+    event_type:document.getElementById('{pfx}-type').value,
+    event_date:getDateVal('{pfx}-date'),
+    date_end:document.getElementById('{pfx}-date-end').value||'',
+    all_day:allday?1:0,
+    hour_start:allday?null:parseInt(document.getElementById('{pfx}-hs').value),
+    hour_end:allday?null:parseInt(document.getElementById('{pfx}-he').value),
+    notes:document.getElementById('{pfx}-notes').value
+  }};
+  fetch(bp+'/api/personal_events',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})
+    .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}});}})
+    .then(function(res){{
+      if(!res.ok){{Toast.show(res.j.error||'Error','err');return;}}
+      location.reload();
+    }});
+}}
+function delPersonalEvent(id){{
+  ConfirmDialog.show('¿Eliminar este evento?','')
+    .then(function(ok){{
+      if(!ok)return;
+      fetch(bp+'/api/personal_events/'+id,{{method:'DELETE'}}).then(function(r){{if(r.ok)location.reload();}});
+    }});
+}}"""
 
 
 def _proj_options():
@@ -413,6 +503,25 @@ def _calendar_page(user, year, month):
     for a in activities:
         act_map.setdefault((a["user_id"], a["activity_date"]), []).append(a)
 
+    # Cargar eventos personales del mes (multi-day: event_date..date_end span)
+    personal_events_month = rs(q("""SELECT pe.*,u.display_name uname
+        FROM personal_events pe JOIN users u ON u.id=pe.user_id
+        WHERE pe.event_date<=? AND (pe.date_end='' OR pe.date_end IS NULL OR pe.date_end>=?)
+        ORDER BY pe.event_date""", (d2, d1)))
+
+    # pev_map: {date_str: [event, ...]} — expand multi-day events
+    pev_map: dict = {}
+    for ev in personal_events_month:
+        start = ev["event_date"]
+        end   = ev["date_end"] or start
+        cur_d = _date.fromisoformat(start)
+        end_d = _date.fromisoformat(end) if end else cur_d
+        while cur_d <= end_d:
+            d_s = str(cur_d)
+            if d1 <= d_s <= d2:
+                pev_map.setdefault(d_s, []).append(ev)
+            cur_d += timedelta(days=1)
+
     # Disponibilidad del mes
     date_list = [str(first + timedelta(days=i)) for i in range(dim)]
     avail = _avail_map(date_list)
@@ -494,7 +603,12 @@ def _calendar_page(user, year, month):
                     "tech_name": t["display_name"],
                 })
 
-        day_data[cur.day] = {"techs": day_tech_data, "acts": day_acts_all}
+        # Personal events for this day
+        day_pevents = pev_map.get(d_str, [])
+        day_data[cur.day] = {"techs": day_tech_data, "acts": day_acts_all,
+                             "pevents": [{"id": e["id"], "title": e["title"],
+                                          "event_type": e.get("event_type","other"),
+                                          "uname": e["uname"]} for e in day_pevents]}
 
         heat = _heat_level(act_count_total) if not is_wkend else 0
         pct, occ_level = _occ_info(active_tech_count, len(techs)) if not is_wkend else (0, "low")
@@ -540,8 +654,10 @@ def _calendar_page(user, year, month):
         avatars_html += '</div>'
 
         # Chips de actividad (máx 3 visibles)
+        day_pevents = pev_map.get(d_str, [])
+        slots_available = 3
         chips_html = '<div class="calp-chips">'
-        shown_acts = day_acts_all[:3]
+        shown_acts = day_acts_all[:slots_available]
         for act in shown_acts:
             atype = act["type"]
             emoji = _TYPE_EMOJI.get(atype, "📌")
@@ -553,9 +669,24 @@ def _calendar_page(user, year, month):
                 f'{emoji} {_esc(short_name)}'
                 f'</div>'
             )
-        if len(day_acts_all) > 3:
-            extra_acts = len(day_acts_all) - 3
-            chips_html += f'<div class="calp-chip more">+{extra_acts} más</div>'
+        remaining = slots_available - len(shown_acts)
+        overflow_acts = max(0, len(day_acts_all) - slots_available)
+        # Personal event chips (ámbar, after activity chips)
+        shown_pev = day_pevents[:max(0, remaining)]
+        for ev in shown_pev:
+            etype = ev.get("event_type","other")
+            icon = _PEVENT_ICON.get(etype, "📌")
+            short_title = ev["title"][:16] if ev.get("title") else ""
+            chips_html += (
+                f'<div class="calp-chip" style="border-left:2px solid {_PEVENT_COLOR}">'
+                f'<div class="calp-chip-dot" style="background:{_PEVENT_COLOR}"></div>'
+                f'{icon} {_esc(short_title)}'
+                f'</div>'
+            )
+        overflow_pev = max(0, len(day_pevents) - len(shown_pev))
+        total_overflow = overflow_acts + overflow_pev
+        if total_overflow > 0:
+            chips_html += f'<div class="calp-chip more">+{total_overflow} más</div>'
         chips_html += '</div>'
 
         # Barra de ocupación
@@ -675,7 +806,7 @@ def _calendar_page(user, year, month):
         f'</div>'
     )
 
-    # ── Botón nueva asignación ────────────────────────────────────────
+    # ── Botones y modales ─────────────────────────────────────────────
     add_btn_html = ""
     act_modal_html = ""
     act_js_str = ""
@@ -689,6 +820,15 @@ def _calendar_page(user, year, month):
         )
         act_modal_html = _activity_modal(str(today))
         act_js_str = _activity_js()
+
+    # Botón "Nuevo evento" disponible para todos los usuarios
+    pev_btn_html = (
+        f'<button class="calp-btn-ghost" style="border-color:{_PEVENT_COLOR};color:{_PEVENT_COLOR}" '
+        f'onclick="document.getElementById(\'pev-modal\').classList.add(\'open\')">'
+        f'🗓 Evento personal</button>'
+    )
+    pev_modal_html = _personal_event_modal(str(today), is_admin)
+    pev_js_str = _personal_event_js(is_admin)
 
     # ── JSON de datos por día (para el panel de detalle en JS) ────────
     day_data_json = json.dumps(day_data, ensure_ascii=False)
@@ -890,6 +1030,7 @@ function mobCalSelect(cell, day) {{
       <a href="{BP}/calendar?view=week&week_start={today_monday}" class="calp-btn-ghost">Semana</a>
       <span class="calp-btn-ghost active">Mes</span>
       <a href="{BP}/calendar?year={today.year}&month={today.month}" class="calp-btn-ghost">Hoy</a>
+      {pev_btn_html}
       {add_btn_html}
     </div>
   </div>
@@ -990,6 +1131,7 @@ function mobCalSelect(cell, day) {{
 </div><!-- /desk-only -->
 
 {act_modal_html}
+{pev_modal_html}
 
 <script>
 var bp = {json.dumps(BP)};
@@ -1012,6 +1154,7 @@ var CALP_TYPE_COLOR = {{
 </script>
 <script>
 {act_js_str}
+{pev_js_str}
 {_avail_cr_js()}
 
 (function() {{
@@ -1116,6 +1259,30 @@ var CALP_TYPE_COLOR = {{
       }});
     }}
 
+    /* Eventos personales */
+    var pevents = data.pevents || [];
+    if (pevents.length > 0) {{
+      var pevTitle = document.createElement('div');
+      pevTitle.className = 'calp-detail-acts-title';
+      pevTitle.style.marginTop = '10px';
+      pevTitle.textContent = 'Eventos personales (' + pevents.length + ')';
+      actsEl.appendChild(pevTitle);
+      var PICON = {{training:'🎓',vendor:'🤝',presentation:'📢',personal:'👤',other:'📌'}};
+      pevents.forEach(function(ev) {{
+        var icon = PICON[ev.event_type] || '📌';
+        var pevDiv = document.createElement('div');
+        pevDiv.className = 'calp-detail-act';
+        pevDiv.style.borderLeft = '2px solid #d97706';
+        pevDiv.innerHTML =
+          '<div class="calp-detail-act-dot" style="background:#d97706"></div>' +
+          '<div class="calp-detail-act-info">' +
+            '<div class="calp-detail-act-name">' + icon + ' ' + (ev.title || '') + '</div>' +
+            '<div class="calp-detail-act-tech">' + (ev.uname || '') + '</div>' +
+          '</div>';
+        actsEl.appendChild(pevDiv);
+      }});
+    }}
+
     document.getElementById('calpNoSelection').style.display = 'none';
     document.getElementById('calpDetailPanel').classList.add('visible');
   }}
@@ -1193,6 +1360,22 @@ def _calendar_week(user, week_start_str):
     for a in acts:
         act_map.setdefault((a["user_id"], a["activity_date"]), []).append(a)
 
+    week_pevents = rs(q("""SELECT pe.*,u.display_name uname
+        FROM personal_events pe JOIN users u ON u.id=pe.user_id
+        WHERE pe.event_date<=? AND (pe.date_end='' OR pe.date_end IS NULL OR pe.date_end>=?)
+        ORDER BY pe.event_date""", (str(we), str(ws))))
+    # pev_week_map: {date_str: [event, ...]}
+    pev_week_map: dict = {}
+    for ev in week_pevents:
+        start_d = _date.fromisoformat(ev["event_date"])
+        end_d   = _date.fromisoformat(ev["date_end"]) if ev.get("date_end") else start_d
+        cur_d   = start_d
+        while cur_d <= end_d:
+            d_s = str(cur_d)
+            if str(ws) <= d_s <= str(we):
+                pev_week_map.setdefault(d_s, []).append(ev)
+            cur_d += timedelta(days=1)
+
     # Build column count: 1 (tech name) + 7 days
     col_tmpl = "110px " + " ".join(["1fr"] * 7)
 
@@ -1243,6 +1426,17 @@ def _calendar_week(user, week_start_str):
                                f'{icon} {_esc(a["pname"][:14])}'
                                f'{(" "+time_lbl) if time_lbl else ""}</span>')
             avp = _avail_picker_html(t["id"], d_str, status, is_admin, compact=True)
+            # Personal events for this tech + day (only own, or all if admin)
+            for pev in pev_week_map.get(d_str, []):
+                if pev["user_id"] == t["id"]:
+                    icon = _PEVENT_ICON.get(pev.get("event_type","other"), "📌")
+                    short = pev["title"][:14] if pev.get("title") else ""
+                    pev_tip = _esc(pev["title"]) + " · " + _esc(pev["uname"])
+                    cell_inner += (
+                        f'<span class="wsl-event" style="background:{_PEVENT_COLOR}" '
+                        f'title="{pev_tip}">'
+                        f'{icon} {_esc(short)}</span>'
+                    )
             cell_inner += f'<div style="text-align:right;margin-top:2px">{avp}</div>'
             row += f'<div class="wsl-cell {bg_cls}">{cell_inner}</div>'
         rows_html += row
@@ -1251,8 +1445,14 @@ def _calendar_week(user, week_start_str):
                       ) if str(ws) != this_ws else ""
     add_btn  = (f'<button class="btn btn-primary" onclick="document.getElementById(\'act-modal\').classList.add(\'open\')">'
                 f'+ Actividad</button>') if is_admin else ""
+    pev_btn_week = (
+        f'<button class="btn btn-ghost btn-sm" style="border-color:{_PEVENT_COLOR};color:{_PEVENT_COLOR}" '
+        f'onclick="document.getElementById(\'pev-modal\').classList.add(\'open\')">🗓 Evento personal</button>'
+    )
     act_modal = _activity_modal(str(today)) if is_admin else ""
     act_js    = _activity_js() if is_admin else ""
+    pev_modal_week = _personal_event_modal(str(today), is_admin)
+    pev_js_week    = _personal_event_js(is_admin)
     cr_panel  = _pending_cr_panel(user)
     right     = _right_panel(user, ws.year, ws.month, today, is_admin)
 
@@ -1268,7 +1468,7 @@ def _calendar_week(user, week_start_str):
         <a href="{BP}/calendar?view=week&week_start={next_ws}" class="btn btn-ghost btn-sm">›</a>
         {this_week_link}
       </div>
-      {add_btn}
+      <div style="display:flex;gap:6px">{pev_btn_week} {add_btn}</div>
     </div>
     <div class="week-sl" style="grid-template-columns:{col_tmpl}">
       {day_headers}
@@ -1278,9 +1478,11 @@ def _calendar_week(user, week_start_str):
   {right}
 </div>
 {act_modal}
+{pev_modal_week}
 <script>
 var bp={json.dumps(BP)};
 {act_js}
+{pev_js_week}
 {_avail_cr_js()}
 </script>"""
     return _shell("calendar", user, content, title="Calendario — Semana")
@@ -1320,6 +1522,11 @@ def _calendar_day(user, day_str):
         ORDER BY a.hour_start,u.display_name""", (day_str,)))
 
     avail = _avail_map([day_str])
+
+    day_pevents = rs(q("""SELECT pe.*,u.display_name uname
+        FROM personal_events pe JOIN users u ON u.id=pe.user_id
+        WHERE pe.event_date<=? AND (pe.date_end='' OR pe.date_end IS NULL OR pe.date_end>=?)
+        ORDER BY pe.event_date,pe.hour_start""", (day_str, day_str)))
 
     act_ids = [a["id"] for a in activities]
     cr_pending = set()
@@ -1442,10 +1649,44 @@ def _calendar_day(user, day_str):
     add_btn_day = (f'<button class="btn btn-primary btn-sm" '
                    f'onclick="document.getElementById(\'slot-modal\').classList.add(\'open\')">'
                    f'+ Actividad</button>') if is_admin else ""
+    pev_btn_day = (
+        f'<button class="btn btn-ghost btn-sm" style="border-color:{_PEVENT_COLOR};color:{_PEVENT_COLOR}" '
+        f'onclick="document.getElementById(\'pev-modal\').classList.add(\'open\')">🗓 Evento personal</button>'
+    )
     add_sidebar = (f'<div style="margin-top:12px">'
                    f'<button class="btn btn-primary btn-sm" style="width:100%" '
                    f'onclick="document.getElementById(\'slot-modal\').classList.add(\'open\')">'
                    f'+ Añadir actividad</button></div>') if is_admin else ""
+
+    # Personal events block for day summary sidebar
+    pev_slot_list = ""
+    for ev in day_pevents:
+        icon = _PEVENT_ICON.get(ev.get("event_type","other"), "📌")
+        etype_lbl = _PEVENT_LABEL.get(ev.get("event_type","other"), "Otro")
+        if ev.get("all_day") or not ev.get("hour_start"):
+            time_str = "Todo el día"
+        else:
+            time_str = f'{ev["hour_start"]:02d}:00 → {ev["hour_end"]:02d}:00'
+        can_del = (ev["user_id"] == user.get("id") or is_admin)
+        ev_id = ev["id"]
+        del_btn = (f'<button class="btn btn-danger btn-icon" style="font-size:.7rem;margin-left:4px" '
+                   f'onclick="delPersonalEvent({ev_id})" title="Eliminar">✕</button>') if can_del else ""
+        ev_title = _esc(ev["title"])
+        ev_uname = _esc(ev["uname"])
+        ev_notes = _esc(ev.get("notes",""))
+        notes_div = f'<div style="font-size:.72rem;color:var(--muted)">{ev_notes}</div>' if ev.get("notes") else ""
+        pev_slot_list += (
+            f'<div style="display:flex;align-items:flex-start;gap:8px;padding:8px 0;'
+            f'border-bottom:1px solid var(--border);border-left:3px solid {_PEVENT_COLOR};padding-left:8px">'
+            f'<div style="flex:1;min-width:0">'
+            f'<div class="fw7" style="font-size:.85rem">{icon} {ev_title}</div>'
+            f'<div style="font-size:.75rem;color:var(--muted)">'
+            f'{_esc(etype_lbl)} · {time_str} · {ev_uname}</div>'
+            f'{notes_div}'
+            f'</div>{del_btn}</div>'
+        )
+    pev_modal_day = _personal_event_modal(day_str, is_admin)
+    pev_js_day    = _personal_event_js(is_admin)
 
     slot_modal_html = ""
     if is_admin:
@@ -1546,7 +1787,7 @@ def _calendar_day(user, day_str):
     <div class="card" style="padding:0;overflow:hidden">
       <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
         <h2 style="margin:0">Horario</h2>
-        <div style="display:flex;gap:8px">{add_btn_day} {add_log_btn_day}</div>
+        <div style="display:flex;gap:8px">{pev_btn_day} {add_btn_day} {add_log_btn_day}</div>
       </div>
       <div style="overflow-x:auto">
       <table class="day-matrix">
@@ -1561,6 +1802,7 @@ def _calendar_day(user, day_str):
         <h2>Resumen del día</h2>
         {slot_list}
         {add_sidebar}
+        {(f'<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px"><div style="font-weight:700;font-size:.8rem;color:{_PEVENT_COLOR};margin-bottom:6px">Eventos personales</div>{pev_slot_list}</div>') if pev_slot_list else ""}
       </div>
     </div>
 
@@ -1572,6 +1814,7 @@ def _calendar_day(user, day_str):
 {slot_modal_html}
 {cr_modal_html}
 {log_modal_day}
+{pev_modal_day}
 
 <script>
 var bp={json.dumps(BP)};
@@ -1653,6 +1896,7 @@ function doDayLog(){{
     .then(function(r){{return r.json().then(function(j){{return{{ok:r.ok,j:j}};}});}})
     .then(function(res){{if(!res.ok){{Toast.show(res.j.error||'Error','err');return;}}location.reload();}});
 }}
+{pev_js_day}
 {_avail_cr_js()}
 </script>"""
     return _shell("calendar", user, content, title="Calendario")
