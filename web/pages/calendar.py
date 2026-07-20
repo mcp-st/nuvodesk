@@ -241,7 +241,7 @@ function doCreatePev(){{
     title:title,
     event_type:document.getElementById('{pfx}-type').value,
     event_date:getDateVal('{pfx}-date'),
-    date_end:document.getElementById('{pfx}-date-end').value||'',
+    date_end:getDateVal('{pfx}-date-end'),
     all_day:allday?1:0,
     hour_start:allday?null:parseInt(document.getElementById('{pfx}-hs').value),
     hour_end:allday?null:parseInt(document.getElementById('{pfx}-he').value),
@@ -509,17 +509,22 @@ def _calendar_page(user, year, month):
         WHERE pe.event_date<=? AND (pe.date_end='' OR pe.date_end IS NULL OR pe.date_end>=?)
         ORDER BY pe.event_date""", (d2, d1)))
 
-    # pev_map: {date_str: [event, ...]} — expand multi-day events
+    # pev_map: {date_str: [event, ...]} + pev_user_days for availability override
     pev_map: dict = {}
+    pev_user_days: set = set()
     for ev in personal_events_month:
         start = ev["event_date"]
         end   = ev["date_end"] or start
-        cur_d = _date.fromisoformat(start)
-        end_d = _date.fromisoformat(end) if end else cur_d
+        try:
+            cur_d = _date.fromisoformat(start)
+            end_d = _date.fromisoformat(end) if end else cur_d
+        except ValueError:
+            continue
         while cur_d <= end_d:
             d_s = str(cur_d)
             if d1 <= d_s <= d2:
                 pev_map.setdefault(d_s, []).append(ev)
+                pev_user_days.add((ev["user_id"], d_s))
             cur_d += timedelta(days=1)
 
     # Disponibilidad del mes
@@ -568,6 +573,8 @@ def _calendar_page(user, year, month):
         for t in techs:
             tid = t["id"]
             avail_status = avail.get((tid, d_str), "available")
+            if (tid, d_str) in pev_user_days and avail_status in ("available", "remote", ""):
+                avail_status = "day_off"
             day_acts_tech = act_map.get((tid, d_str), [])
             has_act = bool(day_acts_tech) and not is_wkend
             if has_act:
@@ -743,6 +750,8 @@ def _calendar_page(user, year, month):
         col = tech_color[t["id"]]
         init = _tech_initials(t["display_name"])
         avail_status = today_avail.get((t["id"], today_str), "available")
+        if (t["id"], today_str) in pev_user_days and avail_status in ("available", "remote", ""):
+            avail_status = "day_off"
         day_acts_today = act_map.get((t["id"], today_str), [])
         has_act_today = bool(day_acts_today)
         if has_act_today:
@@ -755,6 +764,8 @@ def _calendar_page(user, year, month):
             dot_cls, status_label = "offline", "Baja"
         elif avail_status == "traveling":
             dot_cls, status_label = "busy", "Desplazado"
+        elif avail_status == "day_off":
+            dot_cls, status_label = "offline", "Evento personal"
         else:
             dot_cls, status_label = "offline", _AVAIL_LABEL_SHORT.get(avail_status, "Libre")
         avp = _avail_picker_html(t["id"], today_str, avail_status, is_admin, compact=True)
@@ -1364,16 +1375,21 @@ def _calendar_week(user, week_start_str):
         FROM personal_events pe JOIN users u ON u.id=pe.user_id
         WHERE pe.event_date<=? AND (pe.date_end='' OR pe.date_end IS NULL OR pe.date_end>=?)
         ORDER BY pe.event_date""", (str(we), str(ws))))
-    # pev_week_map: {date_str: [event, ...]}
+    # pev_week_map: {date_str: [event, ...]} + pev_user_days_w for availability override
     pev_week_map: dict = {}
+    pev_user_days_w: set = set()
     for ev in week_pevents:
-        start_d = _date.fromisoformat(ev["event_date"])
-        end_d   = _date.fromisoformat(ev["date_end"]) if ev.get("date_end") else start_d
-        cur_d   = start_d
+        try:
+            start_d = _date.fromisoformat(ev["event_date"])
+            end_d   = _date.fromisoformat(ev["date_end"]) if ev.get("date_end") else start_d
+        except ValueError:
+            continue
+        cur_d = start_d
         while cur_d <= end_d:
             d_s = str(cur_d)
             if str(ws) <= d_s <= str(we):
                 pev_week_map.setdefault(d_s, []).append(ev)
+                pev_user_days_w.add((ev["user_id"], d_s))
             cur_d += timedelta(days=1)
 
     # Build column count: 1 (tech name) + 7 days
@@ -1412,6 +1428,8 @@ def _calendar_week(user, week_start_str):
         # Day cells
         for d_str in day_strs:
             status = avail.get((t["id"], d_str), "available")
+            if (t["id"], d_str) in pev_user_days_w and status in ("available", "remote", ""):
+                status = "day_off"
             bg_cls = {"vacation":"vac-bg","day_off":"vac-bg","off":"off-bg",
                       "sick":"off-bg","traveling":"trav-bg"}.get(status, "")
             cell_inner = ""
@@ -1527,6 +1545,7 @@ def _calendar_day(user, day_str):
         FROM personal_events pe JOIN users u ON u.id=pe.user_id
         WHERE pe.event_date<=? AND (pe.date_end='' OR pe.date_end IS NULL OR pe.date_end>=?)
         ORDER BY pe.event_date,pe.hour_start""", (day_str, day_str)))
+    pev_users_day: set = {ev["user_id"] for ev in day_pevents}
 
     act_ids = [a["id"] for a in activities]
     cr_pending = set()
@@ -1564,11 +1583,15 @@ def _calendar_day(user, day_str):
     th_techs = ""
     for t in visible_techs:
         status = avail.get((t["id"], day_str), "available")
+        if t["id"] in pev_users_day and status in ("available", "remote", ""):
+            status = "day_off"
         bg_sty = ""
         if status == "off":
             bg_sty = "background:var(--border)"
         elif status == "traveling":
             bg_sty = "background:color-mix(in srgb,orange 20%,transparent)"
+        elif status == "day_off":
+            bg_sty = "background:rgba(124,58,237,.12)"
         initials = "".join(w[0].upper() for w in t["display_name"].split()[:2])
         col = _pcolor(t["id"])
         avp = _avail_picker_html(t["id"], day_str, status, is_admin, compact=False)
